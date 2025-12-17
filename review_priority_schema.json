@@ -1,0 +1,205 @@
+{
+  "type": "object",
+  "required": ["review_summary", "priority_areas", "file_priorities", "review_strategy", "time_breakdown", "skip_review_files", "confidence_score"],
+  "properties": {
+    "review_summary": {
+      "type": "object",
+      "required": ["total_files", "high_priority_files", "medium_priority_files", "low_priority_files", "estimated_total_minutes", "recommended_reviewers", "complexity_score"],
+      "properties": {
+        "total_files": {
+          "type": "integer"
+        },
+        "high_priority_files": {
+          "type": "integer"
+        },
+        "medium_priority_files": {
+          "type": "integer"
+        },
+        "low_priority_files": {
+          "type": "integer"
+        },
+        "estimated_total_minutes": {
+          "type": "integer"
+        },
+        "recommended_reviewers": {
+          "type": "integer"
+        },
+        "complexity_score": {
+          "type": "number",
+          "minimum": 0.0,
+          "maximum": 1.0
+        }
+      }
+    },
+    "priority_areas": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["priority", "file_path", "reason", "focus_points", "estimated_minutes", "risk_factors", "suggested_checks"],
+        "properties": {
+          "priority": {
+            "type": "string",
+            "enum": ["high", "medium", "low"]
+          },
+          "file_path": {
+            "type": "string"
+          },
+          "line_range": {
+            "type": "object",
+            "properties": {
+              "start": {
+                "type": "integer"
+              },
+              "end": {
+                "type": "integer"
+              }
+            }
+          },
+          "reason": {
+            "type": "string"
+          },
+          "focus_points": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "estimated_minutes": {
+            "type": "integer"
+          },
+          "risk_factors": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "suggested_checks": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "file_priorities": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["file_path", "priority", "priority_score", "estimated_minutes", "reasons", "key_review_points"],
+        "properties": {
+          "file_path": {
+            "type": "string"
+          },
+          "priority": {
+            "type": "string",
+            "enum": ["high", "medium", "low"]
+          },
+          "priority_score": {
+            "type": "number",
+            "minimum": 0.0,
+            "maximum": 1.0
+          },
+          "estimated_minutes": {
+            "type": "integer"
+          },
+          "reasons": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "key_review_points": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "review_strategy": {
+      "type": "object",
+      "required": ["recommended_order", "parallel_review_groups", "prerequisites"],
+      "properties": {
+        "recommended_order": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "parallel_review_groups": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["group_name", "files", "can_review_in_parallel"],
+            "properties": {
+              "group_name": {
+                "type": "string"
+              },
+              "files": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "can_review_in_parallel": {
+                "type": "boolean"
+              }
+            }
+          }
+        },
+        "prerequisites": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "time_breakdown": {
+      "type": "object",
+      "required": ["code_reading", "logic_verification", "testing_review", "documentation_review", "discussion_buffer", "total"],
+      "properties": {
+        "code_reading": {
+          "type": "integer"
+        },
+        "logic_verification": {
+          "type": "integer"
+        },
+        "testing_review": {
+          "type": "integer"
+        },
+        "documentation_review": {
+          "type": "integer"
+        },
+        "discussion_buffer": {
+          "type": "integer"
+        },
+        "total": {
+          "type": "integer"
+        }
+      }
+    },
+    "skip_review_files": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["file_path", "reason"],
+        "properties": {
+          "file_path": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "confidence_score": {
+      "type": "number",
+      "minimum": 0.0,
+      "maximum": 1.0
+    }
+  }
+}

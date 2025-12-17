@@ -1,0 +1,121 @@
+{
+  "type": "object",
+  "required": ["change_summary", "file_changes", "architecture_impact", "migration_notes", "confidence_score"],
+  "properties": {
+    "change_summary": {
+      "type": "object",
+      "required": ["title", "purpose", "scope", "type", "risk_level", "estimated_complexity"],
+      "properties": {
+        "title": {
+          "type": "string",
+          "maxLength": 50
+        },
+        "purpose": {
+          "type": "string"
+        },
+        "scope": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string",
+          "enum": ["feature", "bugfix", "refactor", "docs", "test", "chore"]
+        },
+        "risk_level": {
+          "type": "string",
+          "enum": ["low", "medium", "high"]
+        },
+        "estimated_complexity": {
+          "type": "string",
+          "enum": ["simple", "moderate", "complex"]
+        }
+      }
+    },
+    "file_changes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["file_path", "change_type", "lines_added", "lines_deleted", "purpose", "key_changes", "impact", "dependencies"],
+        "properties": {
+          "file_path": {
+            "type": "string"
+          },
+          "change_type": {
+            "type": "string",
+            "enum": ["added", "modified", "deleted", "renamed"]
+          },
+          "lines_added": {
+            "type": "integer"
+          },
+          "lines_deleted": {
+            "type": "integer"
+          },
+          "purpose": {
+            "type": "string"
+          },
+          "key_changes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "impact": {
+            "type": "string"
+          },
+          "dependencies": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "architecture_impact": {
+      "type": "object",
+      "required": ["affected_modules", "new_dependencies", "api_changes", "database_changes", "config_changes"],
+      "properties": {
+        "affected_modules": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "new_dependencies": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "api_changes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "database_changes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "config_changes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "migration_notes": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "confidence_score": {
+      "type": "number",
+      "minimum": 0.0,
+      "maximum": 1.0
+    }
+  }
+}

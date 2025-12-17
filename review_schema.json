@@ -1,0 +1,69 @@
+{
+  "type": "object",
+  "required": ["findings", "overall_correctness", "overall_explanation", "overall_confidence_score"],
+  "properties": {
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["title", "body", "confidence_score", "code_location"],
+        "properties": {
+          "title": {
+            "type": "string",
+            "maxLength": 80,
+            "description": "Imperative title with priority tag (e.g., '[P1] Fix null pointer exception')"
+          },
+          "body": {
+            "type": "string",
+            "description": "Valid Markdown explaining why this is a problem; cite files/lines/functions"
+          },
+          "confidence_score": {
+            "type": "number",
+            "minimum": 0.0,
+            "maximum": 1.0
+          },
+          "priority": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 3,
+            "description": "0 for P0, 1 for P1, 2 for P2, 3 for P3"
+          },
+          "code_location": {
+            "type": "object",
+            "required": ["absolute_file_path", "line_range"],
+            "properties": {
+              "absolute_file_path": {
+                "type": "string"
+              },
+              "line_range": {
+                "type": "object",
+                "required": ["start", "end"],
+                "properties": {
+                  "start": {
+                    "type": "integer"
+                  },
+                  "end": {
+                    "type": "integer"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "overall_correctness": {
+      "type": "string",
+      "enum": ["patch is correct", "patch is incorrect"]
+    },
+    "overall_explanation": {
+      "type": "string",
+      "description": "1-3 sentence explanation justifying the overall_correctness verdict"
+    },
+    "overall_confidence_score": {
+      "type": "number",
+      "minimum": 0.0,
+      "maximum": 1.0
+    }
+  }
+}
