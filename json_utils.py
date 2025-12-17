@@ -8,16 +8,75 @@ import re
 from typing import Optional, Dict, Any
 
 
-def extract_json_from_text(text: str) -> Optional[Dict[str, Any]]:
+def extract_first_json_object(text: str) -> Optional[str]:
     """
-    从文本中提取 JSON 对象
+    从文本中提取第一个完整的 JSON 对象字符串
+
+    处理 Codex 等工具可能输出重复 JSON 的情况（如 }{  拼接）
 
     Args:
         text: 包含 JSON 的文本
 
     Returns:
+        第一个完整的 JSON 对象字符串，如果未找到则返回 None
+    """
+    brace_count = 0
+    start_idx = -1
+    in_string = False
+    escape_next = False
+
+    for i, char in enumerate(text):
+        # 处理字符串内的转义
+        if escape_next:
+            escape_next = False
+            continue
+
+        if char == '\\' and in_string:
+            escape_next = True
+            continue
+
+        # 处理字符串边界
+        if char == '"' and not escape_next:
+            in_string = not in_string
+            continue
+
+        # 只在字符串外部计算括号
+        if not in_string:
+            if char == '{':
+                if brace_count == 0:
+                    start_idx = i
+                brace_count += 1
+            elif char == '}':
+                brace_count -= 1
+                if brace_count == 0 and start_idx != -1:
+                    return text[start_idx:i+1]
+
+    return None
+
+
+def extract_json_from_text(text: str, mode: str = None) -> Optional[Dict[str, Any]]:
+    """
+    从文本中提取 JSON 对象
+
+    支持三种模式的 JSON 提取：
+    - review: 包含 findings, overall_correctness 等字段
+    - analyze: 包含 change_summary, file_changes 等字段
+    - priority: 包含 review_summary, priority_areas 等字段
+
+    Args:
+        text: 包含 JSON 的文本
+        mode: 模式（review/analyze/priority），用于优先匹配特定格式
+
+    Returns:
         提取的 JSON 对象，如果提取失败则返回 None
     """
+    # 定义各模式的特征字段
+    mode_signatures = {
+        'review': ['findings', 'overall_correctness'],
+        'analyze': ['change_summary', 'file_changes'],
+        'priority': ['review_summary', 'priority_areas']
+    }
+
     # 尝试直接解析整个文本
     try:
         return json.loads(text)
@@ -29,41 +88,63 @@ def extract_json_from_text(text: str) -> Optional[Dict[str, Any]]:
     matches = re.findall(json_block_pattern, text, re.DOTALL)
     if matches:
         try:
-            return json.loads(matches[0])
+            parsed = json.loads(matches[0])
+            return parsed
         except json.JSONDecodeError:
             pass
 
-    # 优先查找包含 "findings" 的 JSON 对象（这是我们期望的 review 结果格式）
-    # 查找 {"findings": 开头的 JSON
-    findings_pattern = r'\{"findings":\s*\[.*?\].*?"overall_correctness".*?"overall_explanation".*?"overall_confidence_score".*?\}'
-    matches = re.findall(findings_pattern, text, re.DOTALL)
-    if matches:
+    # 尝试提取第一个完整的 JSON 对象（处理重复 JSON 的情况）
+    first_json_str = extract_first_json_object(text)
+    if first_json_str:
         try:
-            return json.loads(matches[0])
+            parsed = json.loads(first_json_str)
+            # 如果指定了模式，验证是否匹配
+            if mode and mode in mode_signatures:
+                sig_fields = mode_signatures[mode]
+                if all(field in parsed for field in sig_fields):
+                    return parsed
+            else:
+                # 未指定模式，检查是否匹配任意已知模式
+                for sig_fields in mode_signatures.values():
+                    if all(field in parsed for field in sig_fields):
+                        return parsed
+                # 如果不匹配任何已知模式，仍然返回（可能是其他格式）
+                return parsed
         except json.JSONDecodeError:
             pass
 
-    # 尝试查找包含 "findings" 的完整 JSON 对象
+    # 如果指定了模式，尝试查找特定模式的 JSON
+    if mode and mode in mode_signatures:
+        sig_fields = mode_signatures[mode]
+        first_field = sig_fields[0]
+
+        # 查找以特定字段开头的 JSON
+        for pattern in [f'{{"{first_field}"', f'{{ "{first_field}"']:
+            start_pos = text.find(pattern)
+            if start_pos != -1:
+                json_str = extract_first_json_object(text[start_pos:])
+                if json_str:
+                    try:
+                        parsed = json.loads(json_str)
+                        if all(field in parsed for field in sig_fields):
+                            return parsed
+                    except json.JSONDecodeError:
+                        pass
+
+    # 优先查找包含 "findings" 的 JSON 对象（review 模式）
     findings_start = text.find('{"findings"')
     if findings_start == -1:
         findings_start = text.find('{ "findings"')
 
     if findings_start != -1:
-        brace_count = 0
-        for i in range(findings_start, len(text)):
-            char = text[i]
-            if char == '{':
-                brace_count += 1
-            elif char == '}':
-                brace_count -= 1
-                if brace_count == 0:
-                    try:
-                        json_str = text[findings_start:i+1]
-                        return json.loads(json_str)
-                    except json.JSONDecodeError:
-                        break
+        json_str = extract_first_json_object(text[findings_start:])
+        if json_str:
+            try:
+                return json.loads(json_str)
+            except json.JSONDecodeError:
+                pass
 
-    # 最后尝试查找任意完整的 JSON 对象 { ... }
+    # 最后尝试查找任意完整的 JSON 对象
     brace_count = 0
     start_idx = -1
 
@@ -78,8 +159,12 @@ def extract_json_from_text(text: str) -> Optional[Dict[str, Any]]:
                 try:
                     json_str = text[start_idx:i+1]
                     parsed = json.loads(json_str)
-                    # 验证是否是我们期望的 review 结果
-                    if 'findings' in parsed:
+                    # 验证是否是我们期望的结果格式
+                    for sig_fields in mode_signatures.values():
+                        if all(field in parsed for field in sig_fields):
+                            return parsed
+                    # 如果不匹配任何已知模式但是有效 JSON，也返回
+                    if isinstance(parsed, dict):
                         return parsed
                 except json.JSONDecodeError:
                     pass
