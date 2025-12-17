@@ -97,7 +97,9 @@ ${GREEN}Claude Code Review Tool${NC}
   $0 [选项]
 
 选项:
-  -a, --appid APPID           应用 ID（必需）
+  -r, --repo REPO             仓库路径或 git URL（必需）
+                              支持本地路径、git@github.com:user/repo.git、https://github.com/user/repo.git 等
+  -a, --appid APPID           [已弃用] 应用 ID（请使用 --repo）
   -b, --basebranch BRANCH     基准分支名称（必需）
   -t, --targetbranch BRANCH   目标分支名称（必需）
   -m, --mode MODE             运行模式（默认: all）
@@ -105,7 +107,8 @@ ${GREEN}Claude Code Review Tool${NC}
                               review   - 仅代码审查
                               analyze  - 仅变更解析
                               priority - 仅优先级评估
-  -s, --search-root PATH      搜索根目录（默认: ~/VibeCoding/apprepo）
+  -s, --search-root PATH      [仅在使用 --appid 时有效] 搜索根目录（默认: ~/VibeCoding/apprepo）
+  --clone-dir PATH            [仅在使用 git URL 时有效] 克隆目录（默认使用临时目录）
   --no-context                禁用仓库上下文访问（默认启用）
   -p, --prompt-only           只生成 prompt，不调用 Claude
   -h, --help                  显示此帮助信息
@@ -115,26 +118,48 @@ ${GREEN}Claude Code Review Tool${NC}
   访问完整代码。使用 --no-context 可禁用此功能。
 
 示例:
-  $0 -a 100027304 -b main -t feature/my-feature              # 完整分析（默认启用上下文）
-  $0 -a 100027304 -b main -t feature/my-feature -m review    # 仅代码审查
-  $0 -a 100027304 -b main -t feature/test --prompt-only      # 只生成 prompt
-  $0 -a 100027304 -b main -t feature/test --no-context       # 禁用仓库上下文
+  # 使用本地仓库路径
+  $0 --repo /path/to/repo -b main -t feature/my-feature
+
+  # 使用当前目录
+  $0 --repo . -b main -t feature/my-feature
+
+  # 使用 git URL（会自动克隆）
+  $0 --repo https://github.com/user/repo.git -b main -t feature/my-feature
+
+  # 仅代码审查
+  $0 --repo /path/to/repo -b main -t feature/my-feature -m review
+
+  # 只生成 prompt
+  $0 --repo /path/to/repo -b main -t feature/test --prompt-only
+
+  # 禁用仓库上下文
+  $0 --repo /path/to/repo -b main -t feature/test --no-context
+
+  # 使用旧的 appid 方式（向后兼容）
+  $0 -a 100027304 -b main -t feature/my-feature
 
 EOF
 }
 
 # 解析命令行参数
 parse_args() {
+    REPO=""
     APPID=""
     BASEBRANCH=""
     TARGETBRANCH=""
     SEARCH_ROOT="$HOME/VibeCoding/apprepo"
+    CLONE_DIR=""
     MODE="all"
     PROMPT_ONLY=false
     NO_CONTEXT=false
 
     while [[ $# -gt 0 ]]; do
         case $1 in
+            -r|--repo)
+                REPO="$2"
+                shift 2
+                ;;
             -a|--appid)
                 APPID="$2"
                 shift 2
@@ -153,6 +178,10 @@ parse_args() {
                 ;;
             -s|--search-root)
                 SEARCH_ROOT="$2"
+                shift 2
+                ;;
+            --clone-dir)
+                CLONE_DIR="$2"
                 shift 2
                 ;;
             --no-context)
@@ -176,8 +205,14 @@ parse_args() {
     done
 
     # 验证必需参数
-    if [[ -z "$APPID" ]] || [[ -z "$BASEBRANCH" ]] || [[ -z "$TARGETBRANCH" ]]; then
-        print_error "缺少必需参数"
+    if [[ -z "$REPO" ]] && [[ -z "$APPID" ]]; then
+        print_error "必须提供 --repo 或 --appid 参数之一"
+        show_usage
+        exit 1
+    fi
+
+    if [[ -z "$BASEBRANCH" ]] || [[ -z "$TARGETBRANCH" ]]; then
+        print_error "缺少必需参数: basebranch 和 targetbranch"
         show_usage
         exit 1
     fi
@@ -188,11 +223,21 @@ run_python_version() {
     print_info "使用 Python 版本运行..."
 
     local cmd="python3 \"$SCRIPT_DIR/claude_cr.py\""
-    cmd="$cmd --appid \"$APPID\""
+
+    # 优先使用 --repo，如果没有则使用 --appid
+    if [[ -n "$REPO" ]]; then
+        cmd="$cmd --repo \"$REPO\""
+        if [[ -n "$CLONE_DIR" ]]; then
+            cmd="$cmd --clone-dir \"$CLONE_DIR\""
+        fi
+    elif [[ -n "$APPID" ]]; then
+        cmd="$cmd --appid \"$APPID\""
+        cmd="$cmd --search-root \"$SEARCH_ROOT\""
+    fi
+
     cmd="$cmd --basebranch \"$BASEBRANCH\""
     cmd="$cmd --targetbranch \"$TARGETBRANCH\""
     cmd="$cmd --mode \"$MODE\""
-    cmd="$cmd --search-root \"$SEARCH_ROOT\""
 
     if [[ "$NO_CONTEXT" == true ]]; then
         cmd="$cmd --no-context"
@@ -242,11 +287,18 @@ main() {
 
     # 显示配置信息
     print_info "配置信息:"
-    echo "  AppID: $APPID"
+    if [[ -n "$REPO" ]]; then
+        echo "  Repo: $REPO"
+        if [[ -n "$CLONE_DIR" ]]; then
+            echo "  Clone Dir: $CLONE_DIR"
+        fi
+    elif [[ -n "$APPID" ]]; then
+        echo "  AppID: $APPID (已弃用，建议使用 --repo)"
+        echo "  Search Root: $SEARCH_ROOT"
+    fi
     echo "  Base Branch: $BASEBRANCH"
     echo "  Target Branch: $TARGETBRANCH"
     echo "  Mode: $MODE"
-    echo "  Search Root: $SEARCH_ROOT"
     echo "  Context: $(if [[ "$NO_CONTEXT" == true ]]; then echo "禁用"; else echo "启用（默认）"; fi)"
     echo "  Prompt Only: $PROMPT_ONLY"
     echo ""

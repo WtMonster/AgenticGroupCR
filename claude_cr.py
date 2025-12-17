@@ -14,7 +14,7 @@ import argparse
 from pathlib import Path
 
 # 导入自定义模块
-from repo_finder import find_repo_by_appid
+from repo_finder import find_repo_by_appid, resolve_repo
 from git_utils import resolve_branch_comparison, get_name_status, get_diff
 from json_utils import extract_json_from_text, validate_review_schema, create_fallback_review, format_json
 from prompt_utils import (
@@ -182,23 +182,34 @@ def main():
   priority - Review 优先级评估：识别最需要 review 的代码部分和预估时长
 
 示例：
+  # 使用本地仓库路径
+  %(prog)s --repo /path/to/repo -b main -t feature/test
+
+  # 使用当前目录
+  %(prog)s --repo . -b main -t feature/test
+
+  # 使用 git URL（会自动克隆到临时目录）
+  %(prog)s --repo https://github.com/user/repo.git -b main -t feature/test
+
   # 完整分析（同时运行三种模式）
-  %(prog)s -a 100027304 -b main -t feature/test
+  %(prog)s --repo /path/to/repo -b main -t feature/test
 
   # 仅代码审查
-  %(prog)s -a 100027304 -b main -t feature/test --mode review
+  %(prog)s --repo /path/to/repo -b main -t feature/test --mode review
 
   # 代码变更解析
-  %(prog)s -a 100027304 -b main -t feature/test --mode analyze
+  %(prog)s --repo /path/to/repo -b main -t feature/test --mode analyze
 
   # Review 优先级评估
-  %(prog)s -a 100027304 -b main -t feature/test --mode priority
+  %(prog)s --repo /path/to/repo -b main -t feature/test --mode priority
         """
     )
-    parser.add_argument('--appid', '-a', required=True, help='Application ID')
+    parser.add_argument('--repo', '-r', help='仓库路径或 git URL（本地路径、git@github.com:user/repo.git、https://github.com/user/repo.git 等）')
+    parser.add_argument('--appid', '-a', help='[已弃用] 应用 ID（请使用 --repo 参数）')
     parser.add_argument('--basebranch', '-b', required=True, help='Base branch name')
     parser.add_argument('--targetbranch', '-t', required=True, help='Target branch name')
-    parser.add_argument('--search-root', '-s', default='~/VibeCoding/apprepo', help='Search root directory')
+    parser.add_argument('--search-root', '-s', default='~/VibeCoding/apprepo', help='[仅在使用 --appid 时有效] 搜索根目录')
+    parser.add_argument('--clone-dir', help='[仅在使用 git URL 时有效] 克隆目录（默认使用临时目录）')
     parser.add_argument('--mode', '-m',
                        choices=['all', 'review', 'analyze', 'priority'],
                        default='all',
@@ -210,16 +221,36 @@ def main():
 
     args = parser.parse_args()
 
+    # 参数验证：必须提供 --repo 或 --appid 之一
+    if not args.repo and not args.appid:
+        parser.error('必须提供 --repo 或 --appid 参数之一')
+
+    # 如果同时提供了两个参数，警告并优先使用 --repo
+    if args.repo and args.appid:
+        print('警告: 同时提供了 --repo 和 --appid，将使用 --repo 参数')
+        print('')
+
     # 默认启用仓库上下文访问，除非指定 --no-context
     with_context = not args.no_context
 
     try:
-        # 1. 查找 git 项目
-        search_root = Path(args.search_root).expanduser()  # 展开 ~ 为用户目录
-        if not search_root.exists():
-            print(f"搜索目录不存在，正在创建: {search_root}")
-            search_root.mkdir(parents=True, exist_ok=True)
-        repo_root = find_repo_by_appid(search_root, args.appid)
+        # 1. 获取仓库路径
+        if args.repo:
+            # 使用新的 resolve_repo 函数
+            clone_dir = Path(args.clone_dir) if args.clone_dir else None
+            repo_root = resolve_repo(args.repo, clone_dir)
+            repo_identifier = args.repo  # 用于文件命名
+        else:
+            # 向后兼容：使用旧的 appid 查找方式
+            print('警告: --appid 参数已弃用，建议使用 --repo 参数')
+            print('')
+            search_root = Path(args.search_root).expanduser()
+            if not search_root.exists():
+                print(f"搜索目录不存在，正在创建: {search_root}")
+                search_root.mkdir(parents=True, exist_ok=True)
+            repo_root = find_repo_by_appid(search_root, args.appid)
+            repo_identifier = args.appid  # 用于文件命名
+
         print(f"找到项目: {repo_root}")
 
         # 2. 获取 git diff 信息
@@ -238,19 +269,19 @@ def main():
         for mode in modes_to_run:
             if mode == 'review':
                 prompt = build_full_prompt(
-                    args.appid, args.basebranch, args.targetbranch,
+                    repo_identifier, args.basebranch, args.targetbranch,
                     repo_root, comparison, name_status, diff, with_context
                 )
                 result_filename = 'review_result.json'
             elif mode == 'analyze':
                 prompt = build_change_analysis_prompt(
-                    args.appid, args.basebranch, args.targetbranch,
+                    repo_identifier, args.basebranch, args.targetbranch,
                     repo_root, comparison, name_status, diff, with_context
                 )
                 result_filename = 'change_analysis.json'
             elif mode == 'priority':
                 prompt = build_review_priority_prompt(
-                    args.appid, args.basebranch, args.targetbranch,
+                    repo_identifier, args.basebranch, args.targetbranch,
                     repo_root, comparison, name_status, diff, with_context
                 )
                 result_filename = 'review_priority.json'
@@ -259,7 +290,7 @@ def main():
 
             # 保存 prompt 到文件
             if output_dir is None:
-                output_dir = save_prompt_to_file(prompt, args.appid, args.basebranch, args.targetbranch, repo_root, mode)
+                output_dir = save_prompt_to_file(prompt, repo_identifier, args.basebranch, args.targetbranch, repo_root, mode)
                 print(f"输出目录: {output_dir}")
             else:
                 # 保存额外的 prompt 文件

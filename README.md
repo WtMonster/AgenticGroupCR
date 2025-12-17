@@ -4,7 +4,7 @@
 
 ## 功能特性
 
-- 根据 appid 自动查找 `~/VibeCoding/apprepo/` 下的 git 项目
+- 支持本地仓库路径或 git URL
 - 对齐 Codex 的 git diff 处理逻辑（包括 merge-base 计算、upstream 检测等）
 - 自动加载 Codex 的 review rubric（review_prompt.md）
 - 生成结构化的 review prompt 并调用 Claude Code
@@ -12,6 +12,7 @@
 - 自动保存 prompt 和 review 结果到时间戳目录
 - 完整的 JSON 输出验证和错误处理
 - **默认启用仓库上下文访问**：Claude 在目标仓库目录下运行，可以访问完整的代码
+- 向后兼容旧的 appid 查找方式
 
 ## 安装
 
@@ -37,7 +38,14 @@ git --version  # 验证是否已安装
 ### 方式一：使用便捷脚本（推荐）
 
 ```bash
-./run.sh -a 100027304 -b main -t feature/my-feature
+# 使用本地仓库路径
+./run.sh --repo /path/to/repo -b main -t feature/my-feature
+
+# 使用当前目录
+./run.sh --repo . -b main -t feature/my-feature
+
+# 使用 git URL（会自动克隆到临时目录）
+./run.sh --repo https://github.com/user/repo.git -b main -t feature/my-feature
 ```
 
 脚本会自动检查依赖并运行 code review。**默认情况下，Claude 会在目标仓库目录下运行，可以访问完整代码。**
@@ -45,18 +53,27 @@ git --version  # 验证是否已安装
 ### 方式二：直接运行 Python 脚本
 
 ```bash
+# 使用本地路径
 python3 claude_cr.py \
-  --appid 100027304 \
+  --repo /path/to/repo \
+  --basebranch main \
+  --targetbranch feature/my-feature
+
+# 使用 git URL
+python3 claude_cr.py \
+  --repo https://github.com/user/repo.git \
   --basebranch main \
   --targetbranch feature/my-feature
 ```
 
 ### 参数说明
 
-- `--appid, -a`: 应用 ID（必需）
+- `--repo, -r`: 仓库路径或 git URL（必需）
+  - 支持本地路径（绝对或相对路径）
+  - 支持 git URL（git@github.com:user/repo.git、https://github.com/user/repo.git 等）
 - `--basebranch, -b`: 基准分支名称（必需）
 - `--targetbranch, -t`: 目标分支名称（必需）
-- `--search-root, -s`: 搜索根目录（默认：`~/VibeCoding/apprepo`）
+- `--clone-dir`: 克隆目录（仅在使用 git URL 时有效，默认使用临时目录）
 - `--mode, -m`: 运行模式（默认：`all`）
   - `all`: 完整分析（analyze + priority + review）
   - `review`: 仅代码审查
@@ -65,12 +82,24 @@ python3 claude_cr.py \
 - `--no-context`: 禁用仓库上下文访问（默认启用）
 - `--prompt-only, -p`: 只生成 prompt，不调用 Claude
 
+#### 向后兼容（已弃用）
+
+旧的 `--appid` 参数仍然支持，但建议迁移到 `--repo`：
+
+```bash
+# 旧方式（仍然有效，但已弃用）
+./run.sh -a 100027304 -b main -t feature/my-feature
+```
+
+- `--appid, -a`: 应用 ID（已弃用，请使用 --repo）
+- `--search-root, -s`: 搜索根目录（默认：`~/VibeCoding/apprepo`，仅在使用 --appid 时有效）
+
 ### 示例
 
 #### 1. 完整的 code review 流程（默认启用仓库上下文）
 
 ```bash
-./run.sh -a 100027304 -b main -t feature/add-new-api
+./run.sh --repo /path/to/my-project -b main -t feature/add-new-api
 ```
 
 Claude 会在目标仓库目录下运行，可以：
@@ -81,26 +110,32 @@ Claude 会在目标仓库目录下运行，可以：
 
 这样 Claude 可以更准确地理解代码上下文，给出更高质量的 review。
 
-#### 2. 禁用仓库上下文访问
+#### 2. 使用 git URL
 
 ```bash
-./run.sh -a 100027304 -b main -t feature/add-new-api --no-context
+./run.sh --repo https://github.com/myorg/myrepo.git -b main -t feature/add-new-api
 ```
 
-#### 3. 只生成 prompt（不调用 Claude）
+#### 3. 禁用仓库上下文访问
 
 ```bash
-./run.sh -a 100027304 -b main -t feature/add-new-api --prompt-only
+./run.sh --repo . -b main -t feature/add-new-api --no-context
 ```
 
-#### 4. 自定义搜索目录
+#### 4. 只生成 prompt（不调用 Claude）
+
+```bash
+./run.sh --repo . -b main -t feature/add-new-api --prompt-only
+```
+
+#### 5. 指定克隆目录（使用 git URL 时）
 
 ```bash
 python3 claude_cr.py \
-  --appid 100027304 \
+  --repo https://github.com/user/repo.git \
   --basebranch main \
   --targetbranch feature/add-new-api \
-  --search-root /custom/repo/path
+  --clone-dir /tmp/my-clone
 ```
 
 ## 仓库上下文访问模式
@@ -135,9 +170,13 @@ Claude 可以读取被调用函数的完整实现，确认其行为和边界条�
 
 ## 工作原理
 
-### 1. 查找 Git 项目
+### 1. 获取 Git 仓库
 
-工具会在指定的搜索根目录（默认 `~/VibeCoding/apprepo/`）下递归查找 `app.properties` 文件，并匹配其中的 `app.id` 配置项。找到匹配的项目后，会定位到该项目的 git 仓库根目录。
+工具支持多种方式指定仓库：
+
+- **本地路径**：直接使用本地 git 仓库路径（绝对或相对）
+- **git URL**：自动克隆远程仓库到本地临时目录（或指定目录）
+- **appid 查找（已弃用）**：在指定的搜索根目录下递归查找 `app.properties` 文件，匹配 `app.id` 配置项
 
 ### 2. Git Diff 处理
 
@@ -242,12 +281,15 @@ npm install -g @anthropic-ai/claude-code
 
 或者使用 `--prompt-only` 参数只生成 prompt，不调用 Claude。
 
-### 2. 找不到项目
+### 2. 找不到仓库
 
 检查：
-- `~/VibeCoding/apprepo/` 目录是否存在
-- 项目中是否有 `app.properties` 文件
-- `app.properties` 中是否包含正确的 `app.id` 配置
+- 确保提供的路径存在且是 git 仓库
+- 如果使用 git URL，确保 URL 正确且有访问权限
+- 如果使用旧的 `--appid` 方式：
+  - `~/VibeCoding/apprepo/` 目录是否存在
+  - 项目中是否有 `app.properties` 文件
+  - `app.properties` 中是否包含正确的 `app.id` 配置
 
 ### 3. Git 命令失败
 
@@ -256,7 +298,14 @@ npm install -g @anthropic-ai/claude-code
 - 指定的分支名称正确
 - 有权限访问 git 仓库
 
-### 4. JSON 解析失败
+### 4. 克隆仓库失败
+
+如果使用 git URL：
+- 确保网络连接正常
+- 确保有访问该仓库的权限
+- 如果是私有仓库，确保 SSH key 或访问凭证已配置
+
+### 5. JSON 解析失败
 
 工具会自动尝试从 Claude 输出中提取 JSON，如果失败会创建后备结果。
 可以查看 `raw_output.txt` 文件了解原始输出内容。
@@ -266,7 +315,7 @@ npm install -g @anthropic-ai/claude-code
 ### 查看生成的 prompt
 
 ```bash
-./run.sh -a 100027304 -b main -t feature/test --prompt-only
+./run.sh --repo /path/to/repo -b main -t feature/test --prompt-only
 ```
 
 ### 查看完整输出
