@@ -1707,7 +1707,7 @@ def generate_combined_report(
     # 代码审查 Tab（默认显示）
     html += '<div id="tab-review" class="tab-content active">\n'
     if review_data:
-        html += generate_review_content(review_data)
+        html += generate_review_content(review_data["structured_output"])
     else:
         html += '<div class="card"><p>暂无代码审查数据</p></div>\n'
     html += '</div>\n'
@@ -1715,7 +1715,7 @@ def generate_combined_report(
     # 变更解析 Tab
     html += '<div id="tab-analyze" class="tab-content">\n'
     if analyze_data:
-        html += generate_analyze_content(analyze_data)
+        html += generate_analyze_content(analyze_data["structured_output"])
     else:
         html += '<div class="card"><p>暂无变更解析数据</p></div>\n'
     html += '</div>\n'
@@ -1723,7 +1723,7 @@ def generate_combined_report(
     # 优先级评估 Tab
     html += '<div id="tab-priority" class="tab-content">\n'
     if priority_data:
-        html += generate_priority_content(priority_data)
+        html += generate_priority_content(priority_data["structured_output"])
     else:
         html += '<div class="card"><p>暂无优先级评估数据</p></div>\n'
     html += '</div>\n'
