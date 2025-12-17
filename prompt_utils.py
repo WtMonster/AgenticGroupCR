@@ -199,7 +199,6 @@ def build_full_prompt(
     # 如果找到了 rubric，拼接在前面
     if rubric:
         full_prompt = rubric + "\n\n"
-        full_prompt += "你必须严格按上述 Output schema 只输出 JSON（不要输出任何额外文字，也不要把 JSON 包在 markdown code fences 里）。\n\n"
         full_prompt += "-----\n\n"
         full_prompt += "以下是需要 review 的 MR diff 信息：\n\n"
         full_prompt += mr_prompt

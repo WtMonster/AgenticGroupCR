@@ -19,7 +19,6 @@ from pathlib import Path
 # 导入自定义模块
 from repo_finder import find_repo_by_appid, resolve_repo
 from git_utils import resolve_branch_comparison, get_name_status, get_diff
-from json_utils import extract_json_from_text, validate_review_schema, create_fallback_review, format_json
 from prompt_utils import (
     build_full_prompt,
     build_change_analysis_prompt,
@@ -38,7 +37,7 @@ from generate_report import (
 
 def run_claude_analysis(prompt: str, output_dir: Path = None, mode: str = "review", repo_root: Path = None, with_context: bool = False) -> str:
     """
-    调用 Claude CLI 进行分析，并确保输出符合 schema
+    调用 Claude CLI 进行分析，使用 --output-format 和 --json-schema 参数
 
     Args:
         prompt: 分析 prompt
@@ -48,7 +47,7 @@ def run_claude_analysis(prompt: str, output_dir: Path = None, mode: str = "revie
         with_context: 是否启用仓库上下文访问（在仓库目录下运行 Claude）
 
     Returns:
-        格式化的 JSON 结果
+        JSON 格式的分析结果
 
     Raises:
         Exception: Claude CLI 调用失败
@@ -57,6 +56,13 @@ def run_claude_analysis(prompt: str, output_dir: Path = None, mode: str = "revie
         "review": "Code Review",
         "analyze": "代码变更解析",
         "priority": "Review 优先级评估"
+    }
+
+    # Schema 文件映射
+    schema_files = {
+        "review": "review_schema.json",
+        "analyze": "change_analysis_schema.json",
+        "priority": "review_priority_schema.json"
     }
 
     if with_context and repo_root:
@@ -73,6 +79,21 @@ def run_claude_analysis(prompt: str, output_dir: Path = None, mode: str = "revie
             "未找到 claude 命令，请确保已安装 Claude Code。\n"
             "安装方法: npm install -g @anthropic-ai/claude-code"
         )
+
+    # 获取 schema 文件路径
+    script_dir = Path(__file__).parent
+    schema_file = script_dir / schema_files.get(mode)
+
+    if not schema_file.exists():
+        raise Exception(f"Schema 文件不存在: {schema_file}")
+
+    # 构建 claude 命令
+    claude_cmd = [
+        'claude',
+        '-p', '-',
+        '--output-format', 'json',
+        '--json-schema', str(schema_file)
+    ]
 
     # 准备 subprocess 参数
     run_kwargs = {
@@ -103,14 +124,14 @@ def run_claude_analysis(prompt: str, output_dir: Path = None, mode: str = "revie
     try:
         # 调用 claude
         result = subprocess.run(
-            ['claude', '-p', '-'],
+            claude_cmd,
             **run_kwargs
         )
 
         if result.returncode != 0:
             raise Exception(f"claude 命令执行失败:\n{result.stderr}")
 
-        raw_output = result.stdout
+        json_output = result.stdout
     finally:
         # 停止 loading 动画
         loading = False
@@ -124,37 +145,12 @@ def run_claude_analysis(prompt: str, output_dir: Path = None, mode: str = "revie
     if output_dir:
         raw_output_file = output_dir / 'raw_output.txt'
         with open(raw_output_file, 'w', encoding='utf-8') as f:
-            f.write(raw_output)
+            f.write(json_output)
 
-    # 尝试提取 JSON
-    print("正在验证输出格式...")
-    json_data = extract_json_from_text(raw_output)
+    print("✓ 使用 Claude CLI 的 --output-format json 和 --json-schema 生成结果")
 
-    if json_data is None:
-        print("警告: 无法从输出中提取有效的 JSON")
-        print(f"原始输出长度: {len(raw_output)} 字符")
-        print(f"原始输出前 500 字符: {raw_output[:500]}")
-        print("将使用后备方案...")
-
-        # 只有 review 模式才使用后备方案
-        if mode == "review":
-            fallback = create_fallback_review("无法提取 JSON")
-            return format_json(fallback)
-        else:
-            # 其他模式直接返回原始输出
-            return raw_output
-
-    # 只有 review 模式才验证 schema
-    if mode == "review" and not validate_review_schema(json_data):
-        print("警告: 输出不符合预期的 schema")
-        print("将使用后备方案...")
-        fallback = create_fallback_review("Schema 验证失败")
-        return format_json(fallback)
-
-    print("✓ 输出格式验证通过")
-
-    # 返回格式化的 JSON
-    return format_json(json_data)
+    # 返回 JSON 输出
+    return json_output
 
 
 def generate_html_report(json_file: Path, mode: str) -> Path:
