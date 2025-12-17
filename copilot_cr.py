@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Codex Code Review Tool - 使用 codex 命令进行 code review
+Copilot Code Review Tool - 使用 GitHub Copilot CLI 进行 code review
 
-支持三种模式（与 claude_cr.py 对齐）：
+支持三种模式（与 claude_cr.py / codex_cr.py 对齐）：
 1. review - 代码审查（默认）
 2. analyze - 代码变更解析
 3. priority - Review 优先级评估
@@ -17,7 +17,7 @@ from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, Tuple, Any
 
-# 导入通用模块（与 claude_cr.py 共享）
+# 导入通用模块（与 claude_cr.py / codex_cr.py 共享）
 from repo_finder import find_repo_by_appid
 from git_utils import resolve_branch_comparison, get_name_status, get_diff
 from json_utils import extract_json_from_text, validate_review_schema, create_fallback_review, format_json
@@ -36,98 +36,115 @@ from generate_report import (
 )
 
 
-def run_codex_with_prompt(
+# Copilot 支持的模型
+COPILOT_MODELS = {
+    # Claude 系列
+    'claude-sonnet-4.5': 'claude-sonnet-4.5',
+    'claude-haiku-4.5': 'claude-haiku-4.5',
+    'claude-opus-4.5': 'claude-opus-4.5',
+    'claude-sonnet-4': 'claude-sonnet-4',
+    # GPT 系列
+    'gpt-5.1-codex-max': 'gpt-5.1-codex-max',
+    'gpt-5.1-codex': 'gpt-5.1-codex',
+    'gpt-5.2': 'gpt-5.2',
+    'gpt-5.1': 'gpt-5.1',
+    'gpt-5': 'gpt-5',
+    'gpt-5.1-codex-mini': 'gpt-5.1-codex-mini',
+    'gpt-5-mini': 'gpt-5-mini',
+    'gpt-4.1': 'gpt-4.1',
+    # Gemini 系列
+    'gemini-3-pro-preview': 'gemini-3-pro-preview',
+    # 简写别名
+    'sonnet': 'claude-sonnet-4.5',
+    'haiku': 'claude-haiku-4.5',
+    'opus': 'claude-opus-4.5',
+    'codex-max': 'gpt-5.1-codex-max',
+    'codex': 'gpt-5.1-codex',
+    'gemini': 'gemini-3-pro-preview',
+}
+
+
+def run_copilot_with_prompt(
     prompt: str,
     repo_root: Path,
     output_dir: Path = None,
     mode: str = "review",
-    model: str = None,
-    profile: str = None,
-    reasoning_effort: str = None
+    model: str = None
 ) -> str:
     """
-    使用自定义 prompt 调用 codex exec
+    使用自定义 prompt 调用 copilot -p
 
-    使用 -o /dev/stdout 参数直接获取最终消息，无需解析 JSONL 事件流。
-    这与 claude -p - 的输出方式类似，简化了输出处理逻辑。
+    使用 -p 参数进行非交互式执行，-s 参数只输出 agent 响应。
+    使用 --allow-all-tools 允许所有工具自动执行。
 
     Args:
         prompt: 自定义 prompt
         repo_root: 仓库根目录
         output_dir: 输出目录
         mode: 模式（review/analyze/priority）
-        model: 指定使用的模型（如 o3, gpt-4o, gpt-5.1 等）
-        profile: 使用预定义的 Codex Profile
-        reasoning_effort: 模型推理努力程度
+        model: 指定使用的模型
 
     Returns:
-        Codex 的输出结果（agent 最终消息）
+        Copilot 的输出结果
 
     Raises:
-        Exception: codex 命令执行失败
+        Exception: copilot 命令执行失败
     """
     mode_names = {
         "review": "code review",
         "analyze": "代码变更解析",
         "priority": "review 优先级评估"
     }
-    print(f"正在调用 Codex 进行 {mode_names.get(mode, mode)}...")
+    print(f"正在调用 Copilot 进行 {mode_names.get(mode, mode)}...")
     print(f"仓库目录: {repo_root}")
 
-    # 检查 codex 命令是否存在
-    result = subprocess.run(['which', 'codex'], capture_output=True)
+    # 检查 copilot 命令是否存在
+    result = subprocess.run(['which', 'copilot'], capture_output=True)
     if result.returncode != 0:
         raise Exception(
-            "未找到 codex 命令，请确保已安装 Codex。\n"
-            "安装方法: 参考 https://github.com/openai/codex"
+            "未找到 copilot 命令，请确保已安装 GitHub Copilot CLI。\n"
+            "安装方法: 在 VS Code 中安装 GitHub Copilot Chat 扩展"
         )
 
-    # 构建 codex exec 命令
-    # 使用 -o /dev/stdout 直接输出最终消息（类似 claude -p - 的输出方式）
-    # 使用 --full-auto 跳过确认提示，实现自动执行
-    cmd = ['codex', 'exec', '--full-auto', '-o', '/dev/stdout']
+    # 构建 copilot 命令
+    # -p: 非交互式执行 prompt
+    # -s: silent 模式，只输出 agent 响应
+    # --allow-all-tools: 允许所有工具自动执行
+    cmd = ['copilot', '-p', prompt, '-s', '--allow-all-tools']
 
-    # 添加模型相关参数
-    if profile:
-        cmd.extend(['--profile', profile])
-        print(f"使用 Profile: {profile}")
+    # 添加模型参数
     if model:
-        cmd.extend(['--model', model])
-        print(f"使用模型: {model}")
-    if reasoning_effort:
-        cmd.extend(['-c', f'model_reasoning_effort={reasoning_effort}'])
-        print(f"推理努力程度: {reasoning_effort}")
+        # 处理模型别名
+        actual_model = COPILOT_MODELS.get(model, model)
+        cmd.extend(['--model', actual_model])
+        print(f"使用模型: {actual_model}")
 
-    # 添加 stdin 输入标记
-    cmd.append('-')
-
-    print(f"执行命令: {' '.join(cmd)}")
+    print(f"执行命令: copilot -p <prompt> -s --allow-all-tools" + (f" --model {COPILOT_MODELS.get(model, model)}" if model else ""))
     print(f"Prompt 长度: {len(prompt)} 字符\n")
 
-    # 在仓库目录下执行 codex
+    # 在仓库目录下执行 copilot
     result = subprocess.run(
         cmd,
-        input=prompt,
         cwd=str(repo_root),
         capture_output=True,
         text=True
     )
 
-    # 打印 stderr（codex 的进度信息）
+    # 打印 stderr（copilot 的进度信息）
     if result.stderr:
-        print("Codex 进度信息:")
+        print("Copilot 进度信息:")
         print(result.stderr)
 
     if result.returncode != 0:
-        print(f"codex 命令执行失败:")
+        print(f"copilot 命令执行失败:")
         print(f"stderr: {result.stderr}")
-        raise Exception(f"codex 执行失败，退出码: {result.returncode}")
+        raise Exception(f"copilot 执行失败，退出码: {result.returncode}")
 
-    # stdout 直接就是最终消息（类似 claude 的输出）
+    # stdout 是 agent 的响应
     raw_output = result.stdout
 
     if output_dir:
-        # 保存到 raw_output.txt（与 claude_cr.py 对齐）
+        # 保存到 raw_output.txt
         raw_output_file = output_dir / 'raw_output.txt'
         with open(raw_output_file, 'a', encoding='utf-8') as f:
             f.write(f"\n\n{'='*50}\n")
@@ -137,56 +154,6 @@ def run_codex_with_prompt(
         print(f"✓ 原始输出已保存到: {raw_output_file}")
 
     return raw_output
-
-
-def run_codex_analysis(
-    prompt: str,
-    output_dir: Path,
-    mode: str,
-    repo_root: Path
-) -> str:
-    """
-    调用 Codex 进行分析，并确保输出符合 schema（与 claude_cr.py 的 run_claude_analysis 对齐）
-
-    Args:
-        prompt: 分析 prompt
-        output_dir: 输出目录
-        mode: 模式（review/analyze/priority）
-        repo_root: 仓库根目录
-
-    Returns:
-        格式化的 JSON 结果
-    """
-    # 调用 Codex
-    raw_output = run_codex_with_prompt(prompt, repo_root, output_dir, mode)
-
-    # 尝试提取 JSON（传入 mode 参数以支持不同格式的 JSON 提取）
-    print("正在验证输出格式...")
-    json_data = extract_json_from_text(raw_output, mode)
-
-    if json_data is None:
-        print("警告: 无法从输出中提取有效的 JSON")
-        print(f"原始输出长度: {len(raw_output)} 字符")
-        print(f"原始输出前 500 字符: {raw_output[:500]}")
-        print("将使用后备方案...")
-
-        # 只有 review 模式才使用后备方案
-        if mode == "review":
-            fallback = create_fallback_review("无法提取 JSON")
-            return format_json(fallback)
-        else:
-            # 其他模式直接返回原始输出
-            return raw_output
-
-    # 只有 review 模式才验证 schema
-    if mode == "review" and not validate_review_schema(json_data):
-        print("警告: 输出不符合预期的 schema")
-        print("将使用后备方案...")
-        fallback = create_fallback_review("Schema 验证失败")
-        return format_json(fallback)
-
-    print("✓ 输出格式验证通过")
-    return format_json(json_data)
 
 
 def generate_html_report(json_file: Path, mode: str) -> Path:
@@ -242,23 +209,18 @@ def save_meta_info(
     repo_root: Path,
     comparison: dict = None,
     mode: str = "review",
-    model: str = None,
-    profile: str = None,
-    reasoning_effort: str = None
+    model: str = None
 ) -> None:
     """
     保存元信息到文件
     """
     meta_file = output_dir / 'meta.txt'
     with open(meta_file, 'w', encoding='utf-8') as f:
-        f.write(f"Tool: Codex\n")
+        f.write(f"Tool: Copilot\n")
         f.write(f"Mode: {mode}\n")
         if model:
-            f.write(f"Model: {model}\n")
-        if profile:
-            f.write(f"Profile: {profile}\n")
-        if reasoning_effort:
-            f.write(f"Reasoning Effort: {reasoning_effort}\n")
+            actual_model = COPILOT_MODELS.get(model, model)
+            f.write(f"Model: {actual_model}\n")
         f.write(f"AppID: {appid}\n")
         f.write(f"Repo Root: {repo_root}\n")
         f.write(f"Base Branch: {base_branch}\n")
@@ -276,9 +238,7 @@ def run_single_mode_analysis(
     output_dir: Path,
     repo_root: Path,
     result_filename: str,
-    model: str = None,
-    profile: str = None,
-    reasoning_effort: str = None
+    model: str = None
 ) -> Tuple[str, str, bool, str]:
     """
     运行单个模式的分析（用于并行执行）
@@ -290,8 +250,6 @@ def run_single_mode_analysis(
         repo_root: 仓库根目录
         result_filename: 结果文件名
         model: 指定使用的模型
-        profile: 使用预定义的 Codex Profile
-        reasoning_effort: 模型推理努力程度
 
     Returns:
         (mode, result_filename, success, result_or_error)
@@ -299,20 +257,11 @@ def run_single_mode_analysis(
     try:
         thread_safe_print(f"\n[{mode}] 开始分析...")
 
-        # 调用 Codex
-        raw_output = run_codex_with_prompt(
+        # 调用 Copilot
+        raw_output = run_copilot_with_prompt(
             prompt, repo_root, output_dir, mode,
-            model=model, profile=profile, reasoning_effort=reasoning_effort
+            model=model
         )
-
-        # 保存原始输出
-        if output_dir:
-            raw_output_file = output_dir / 'raw_output.txt'
-            with open(raw_output_file, 'a', encoding='utf-8') as f:
-                f.write(f"\n\n{'='*50}\n")
-                f.write(f"Mode: {mode}\n")
-                f.write(f"{'='*50}\n\n")
-                f.write(raw_output)
 
         # 提取 JSON
         json_data = extract_json_from_text(raw_output, mode)
@@ -354,18 +303,30 @@ def run_single_mode_analysis(
 def main():
     """主函数"""
     parser = argparse.ArgumentParser(
-        description='Codex Code Review Tool - 支持代码审查、变更解析、优先级评估',
+        description='Copilot Code Review Tool - 支持代码审查、变更解析、优先级评估',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-模式说明（与 claude_cr.py 完全对齐）：
+模式说明（与 claude_cr.py / codex_cr.py 完全对齐）：
   all      - 完整分析（默认）：同时运行 analyze、priority 和 review 三种分析
   review   - 代码审查：识别代码问题和改进建议
   analyze  - 代码变更解析：理解变更目的、影响范围和架构影响
   priority - Review 优先级评估：识别最需要 review 的代码部分和预估时长
 
+可用模型：
+  Claude 系列: claude-sonnet-4.5, claude-haiku-4.5, claude-opus-4.5, claude-sonnet-4
+  GPT 系列: gpt-5.1-codex-max, gpt-5.1-codex, gpt-5.2, gpt-5.1, gpt-5, gpt-5-mini, gpt-4.1
+  Gemini 系列: gemini-3-pro-preview
+  简写别名: sonnet, haiku, opus, codex-max, codex, gemini
+
 示例：
   # 完整分析（同时运行三种模式）
   %(prog)s -a 100027304 -b main -t feature/test
+
+  # 使用 Claude Sonnet 模型
+  %(prog)s -a 100027304 -b main -t feature/test -M sonnet
+
+  # 使用 GPT-5.1 Codex Max 模型
+  %(prog)s -a 100027304 -b main -t feature/test -M codex-max
 
   # 仅代码审查
   %(prog)s -a 100027304 -b main -t feature/test --mode review
@@ -386,19 +347,12 @@ def main():
                        default='all',
                        help='运行模式：all(完整分析), review(代码审查), analyze(变更解析), priority(优先级评估)')
     parser.add_argument('--prompt-only', action='store_true',
-                       help='只生成 prompt，不调用 Codex')
+                       help='只生成 prompt，不调用 Copilot')
     parser.add_argument('--no-context', action='store_true',
                        help='禁用仓库上下文访问（默认启用）')
     parser.add_argument('--model', '-M',
                        default=None,
-                       help='指定 Codex 使用的模型（如 o3, gpt-4o, gpt-5.1 等）')
-    parser.add_argument('--profile', '-p',
-                       default=None,
-                       help='使用预定义的 Codex Profile（如 o3）')
-    parser.add_argument('--reasoning-effort',
-                       choices=['minimal', 'low', 'medium', 'high', 'xhigh'],
-                       default=None,
-                       help='模型推理努力程度（默认: medium）')
+                       help='指定 Copilot 使用的模型（如 sonnet, opus, gpt-5.1, codex-max 等）')
 
     args = parser.parse_args()
 
@@ -461,9 +415,9 @@ def main():
             mode_configs[first_mode]['prompt'],
             args.appid, args.basebranch, args.targetbranch, repo_root, first_mode
         )
-        # 修改目录名前缀为 codex-review
+        # 修改目录名前缀为 copilot-review
         old_dir = output_dir
-        new_dir_name = output_dir.name.replace('review-prompt-', 'codex-review-')
+        new_dir_name = output_dir.name.replace('review-prompt-', 'copilot-review-')
         output_dir = output_dir.parent / new_dir_name
         old_dir.rename(output_dir)
         print(f"输出目录: {output_dir}")
@@ -471,7 +425,7 @@ def main():
         # 保存元信息
         save_meta_info(
             output_dir, args.appid, args.basebranch, args.targetbranch, repo_root, comparison, args.mode,
-            model=args.model, profile=args.profile, reasoning_effort=args.reasoning_effort
+            model=args.model
         )
 
         # 保存其他模式的 prompt 文件
@@ -487,9 +441,9 @@ def main():
             # 6. 并行执行所有模式的分析
             print(f"\n{'='*50}")
             if len(modes_to_run) > 1:
-                print(f"并行运行 {len(modes_to_run)} 个模式: {', '.join(modes_to_run)} (Codex)")
+                print(f"并行运行 {len(modes_to_run)} 个模式: {', '.join(modes_to_run)} (Copilot)")
             else:
-                print(f"运行模式: {modes_to_run[0]} (Codex)")
+                print(f"运行模式: {modes_to_run[0]} (Copilot)")
             if with_context:
                 print(f"仓库上下文: 已启用（工作目录: {repo_root}）")
             print(f"{'='*50}")
@@ -502,7 +456,7 @@ def main():
                 config = mode_configs[mode]
                 mode_result = run_single_mode_analysis(
                     mode, config['prompt'], output_dir, repo_root, config['result_filename'],
-                    model=args.model, profile=args.profile, reasoning_effort=args.reasoning_effort
+                    model=args.model
                 )
                 results[mode] = mode_result
             else:
@@ -514,7 +468,7 @@ def main():
                         future = executor.submit(
                             run_single_mode_analysis,
                             mode, config['prompt'], output_dir, repo_root, config['result_filename'],
-                            args.model, args.profile, args.reasoning_effort
+                            args.model
                         )
                         futures[future] = mode
 

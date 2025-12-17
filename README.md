@@ -1,12 +1,13 @@
 # AgenticGroupCR - 多 AI 引擎 Code Review 工具
 
-这是一个独立的 code review 工具，支持使用多种 AI 引擎（Claude Code、Codex）进行代码审查。
+这是一个独立的 code review 工具，支持使用多种 AI 引擎（Claude Code、Codex、GitHub Copilot）进行代码审查。
 
 ## 功能特性
 
 - **多 AI 引擎支持**：
   - **Claude Code**：通过 `claude -p` 命令调用，支持仓库上下文访问，支持临时指定模型
   - **Codex**：通过 `codex exec` 命令调用，支持临时指定模型和推理程度
+  - **GitHub Copilot**：通过 `copilot -p` 命令调用，支持多种模型（Claude/GPT/Gemini）
 - **三种分析模式**：
   - `review` - 代码审查：识别代码问题和改进建议
   - `analyze` - 变更解析：理解变更目的、影响范围和架构影响
@@ -20,7 +21,8 @@
 - 支持大文件截断（对齐 Codex 的截断策略）
 - 自动保存 prompt 和 review 结果到时间戳目录
 - 生成综合 HTML 报告（支持 Tab 切换）
-- **Claude 默认启用仓库上下文访问**：Claude 在目标仓库目录下运行，可以访问完整的代码
+- **默认启用仓库上下文访问**：所有 AI 引擎都在目标仓库目录下运行，可以访问完整的代码
+- **Copilot 多模型优势**：通过 Copilot 可以统一调用 Claude、GPT、Gemini 三大系列模型
 
 ## 安装
 
@@ -41,6 +43,14 @@ python3 --version  # 验证是否已安装
    **选项 B: Codex**
    ```bash
    # 参考 https://github.com/openai/codex 安装
+   ```
+
+   **选项 C: GitHub Copilot CLI**
+   ```bash
+   # 在 VS Code 中安装 GitHub Copilot Chat 扩展
+   # Copilot CLI 会自动安装到 VS Code 的 globalStorage 目录
+   # 将 Copilot CLI 添加到 PATH（macOS）：
+   export PATH="$PATH:$HOME/Library/Application Support/Code/User/globalStorage/github.copilot-chat/copilotCli"
    ```
 
 3. **Git**（通常系统自带）：
@@ -68,6 +78,19 @@ git --version  # 验证是否已安装
 
 # 使用指定模型和推理程度
 ./run_codex.sh -a 100027304 -b main -t feature/my-feature -M gpt-5.1-codex-max -r high
+```
+
+### 使用 GitHub Copilot
+
+```bash
+# 完整分析（三种模式并行执行）
+./run_copilot.sh -a 100027304 -b main -t feature/my-feature
+
+# 使用 Claude Sonnet 模型
+./run_copilot.sh -a 100027304 -b main -t feature/my-feature -M sonnet
+
+# 使用 GPT-5.1 Codex Max 模型
+./run_copilot.sh -a 100027304 -b main -t feature/my-feature -M codex-max
 ```
 
 ## 参数说明
@@ -125,6 +148,33 @@ git --version  # 验证是否已安装
 - `high` - 高推理
 - `xhigh` - 最高推理（仅 gpt-5.1-codex-max 支持）
 
+### Copilot 参数（copilot_cr.py / run_copilot.sh）
+
+| 参数 | 简写 | 说明 | 默认值 |
+|------|------|------|--------|
+| `--appid` | `-a` | 应用 ID（必需） | - |
+| `--basebranch` | `-b` | 基准分支名称（必需） | - |
+| `--targetbranch` | `-t` | 目标分支名称（必需） | - |
+| `--search-root` | `-s` | 搜索根目录 | `~/VibeCoding/apprepo` |
+| `--mode` | `-m` | 运行模式 | `all` |
+| `--model` | `-M` | 指定模型（临时） | - |
+| `--no-context` | - | 禁用仓库上下文访问 | 启用 |
+| `--prompt-only` | - | 只生成 prompt，不调用 Copilot | - |
+
+**可用模型**：
+
+| 系列 | 完整名称 | 简写别名 | 说明 |
+|------|----------|----------|------|
+| Claude | `claude-sonnet-4.5` | `sonnet` | 推荐，平衡性能与速度 |
+| Claude | `claude-opus-4.5` | `opus` | 最强，适合复杂分析 |
+| Claude | `claude-haiku-4.5` | `haiku` | 快速，适合简单任务 |
+| Claude | `claude-sonnet-4` | - | Sonnet 4 版本 |
+| GPT | `gpt-5.1-codex-max` | `codex-max` | 最强编码模型 |
+| GPT | `gpt-5.1-codex` | `codex` | 编码优化版 |
+| GPT | `gpt-5.2`, `gpt-5.1`, `gpt-5` | - | GPT 5 系列 |
+| GPT | `gpt-5-mini`, `gpt-4.1` | - | 轻量版本 |
+| Gemini | `gemini-3-pro-preview` | `gemini` | Google Gemini |
+
 ## 使用示例
 
 ### Claude Code 示例
@@ -168,12 +218,38 @@ git --version  # 验证是否已安装
 ./run_codex.sh -a 100027304 -b main -t feature/add-new-api --prompt-only
 ```
 
+### Copilot 示例
+
+```bash
+# 1. 完整分析（默认，三种模式并行执行）
+./run_copilot.sh -a 100027304 -b main -t feature/add-new-api
+
+# 2. 使用 Claude Sonnet 模型
+./run_copilot.sh -a 100027304 -b main -t feature/add-new-api -M sonnet
+
+# 3. 使用 Claude Opus 模型（最强）
+./run_copilot.sh -a 100027304 -b main -t feature/add-new-api -M opus
+
+# 4. 使用 GPT-5.1 Codex Max 模型
+./run_copilot.sh -a 100027304 -b main -t feature/add-new-api -M codex-max
+
+# 5. 使用 Gemini 模型
+./run_copilot.sh -a 100027304 -b main -t feature/add-new-api -M gemini
+
+# 6. 仅代码审查
+./run_copilot.sh -a 100027304 -b main -t feature/add-new-api -m review
+
+# 7. 只生成 prompt（不调用 Copilot）
+./run_copilot.sh -a 100027304 -b main -t feature/add-new-api --prompt-only
+```
+
 ## 输出说明
 
 ### 输出目录
 
 - **Claude Code**: `review-prompt-{timestamp}/`
 - **Codex**: `codex-review-{timestamp}/`
+- **Copilot**: `copilot-review-{timestamp}/`
 
 ### 输出文件
 
@@ -284,6 +360,7 @@ open codex-review-20251217_004126/review_result.html
 AgenticGroupCR/
 ├── claude_cr.py               # Claude Code 主入口（支持并行执行）
 ├── codex_cr.py                # Codex 主入口（支持并行执行）
+├── copilot_cr.py              # Copilot 主入口（支持并行执行）
 ├── repo_finder.py             # 仓库查找模块（共享）
 ├── git_utils.py               # Git 操作工具（共享）
 ├── prompt_utils.py            # Prompt 构建工具（共享）
@@ -291,6 +368,7 @@ AgenticGroupCR/
 ├── generate_report.py         # HTML 报告生成（支持综合报告）
 ├── run.sh                     # Claude 便捷运行脚本
 ├── run_codex.sh               # Codex 便捷运行脚本
+├── run_copilot.sh             # Copilot 便捷运行脚本
 ├── review_prompt.md           # Code review 规范
 ├── change_analysis_prompt.md  # 变更解析 prompt
 ├── review_priority_prompt.md  # 优先级评估 prompt
@@ -311,18 +389,29 @@ npm install -g @anthropic-ai/claude-code
 
 参考 https://github.com/openai/codex 安装，或使用 `--prompt-only` 参数。
 
-### 3. 找不到项目
+### 3. 找不到 copilot 命令
+
+确保已在 VS Code 中安装 GitHub Copilot Chat 扩展，并将 Copilot CLI 路径添加到 PATH：
+
+```bash
+# macOS 上 Copilot CLI 通常位于：
+export PATH="$PATH:$HOME/Library/Application Support/Code/User/globalStorage/github.copilot-chat/copilotCli"
+```
+
+或使用 `--prompt-only` 参数只生成 prompt。
+
+### 4. 找不到项目
 
 检查：
 - `~/VibeCoding/apprepo/` 目录是否存在
 - 项目中是否有 `app.properties` 文件
 - `app.properties` 中是否包含正确的 `app.id` 配置
 
-### 4. JSON 解析失败
+### 5. JSON 解析失败
 
 工具会自动处理重复 JSON 输出问题（如 `}{` 拼接）。如果仍然失败，可以查看 `raw_output.txt` 了解原始输出。
 
-### 5. 报告显示"暂无数据"
+### 6. 报告显示"暂无数据"
 
 可能是 JSON 文件损坏。可以手动修复：
 
