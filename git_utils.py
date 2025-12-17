@@ -220,3 +220,110 @@ def get_current_branch(repo_root: Path) -> str:
     """
     output, _, _, _ = run_git(repo_root, ['rev-parse', '--abbrev-ref', 'HEAD'])
     return output.strip()
+
+
+def update_repo(repo_root: Path, base_branch: str, target_branch: str) -> Dict[str, str]:
+    """
+    更新仓库，拉取远程最新代码
+
+    Args:
+        repo_root: git 仓库根目录
+        base_branch: 基准分支名称
+        target_branch: 目标分支名称
+
+    Returns:
+        包含更新结果的字典：
+        - fetch_result: fetch 结果信息
+        - base_updated: base 分支是否有更新
+        - target_updated: target 分支是否有更新
+    """
+    print("正在更新仓库...")
+
+    result = {
+        'fetch_result': '',
+        'base_updated': False,
+        'target_updated': False
+    }
+
+    # 1. 执行 git fetch --all 获取所有远程更新
+    try:
+        fetch_output = subprocess.run(
+            ['git', 'fetch', '--all', '--prune'],
+            cwd=repo_root,
+            capture_output=True,
+            text=True
+        )
+        if fetch_output.returncode == 0:
+            result['fetch_result'] = 'fetch 成功'
+            print("  git fetch --all --prune: 成功")
+        else:
+            result['fetch_result'] = f'fetch 失败: {fetch_output.stderr}'
+            print(f"  git fetch 警告: {fetch_output.stderr}")
+    except Exception as e:
+        result['fetch_result'] = f'fetch 异常: {str(e)}'
+        print(f"  git fetch 异常: {e}")
+
+    # 2. 检查并更新 base 分支（如果是本地分支且有远程跟踪）
+    try:
+        # 获取当前分支
+        current_branch = get_current_branch(repo_root)
+
+        # 检查 base 分支的远程跟踪状态
+        for branch in [base_branch, target_branch]:
+            try:
+                # 检查是否有对应的远程分支
+                remote_ref = f'origin/{branch}'
+                check_remote = subprocess.run(
+                    ['git', 'rev-parse', '--verify', remote_ref],
+                    cwd=repo_root,
+                    capture_output=True,
+                    text=True
+                )
+
+                if check_remote.returncode == 0:
+                    # 检查本地分支是否存在
+                    check_local = subprocess.run(
+                        ['git', 'rev-parse', '--verify', branch],
+                        cwd=repo_root,
+                        capture_output=True,
+                        text=True
+                    )
+
+                    if check_local.returncode == 0:
+                        # 比较本地和远程的差异
+                        local_sha = check_local.stdout.strip()
+                        remote_sha = check_remote.stdout.strip()
+
+                        if local_sha != remote_sha:
+                            # 如果当前在该分支上，使用 pull；否则使用 fetch 已经更新了远程引用
+                            if current_branch == branch:
+                                pull_result = subprocess.run(
+                                    ['git', 'pull', '--ff-only'],
+                                    cwd=repo_root,
+                                    capture_output=True,
+                                    text=True
+                                )
+                                if pull_result.returncode == 0:
+                                    print(f"  {branch}: 已更新（pull）")
+                                    if branch == base_branch:
+                                        result['base_updated'] = True
+                                    else:
+                                        result['target_updated'] = True
+                                else:
+                                    print(f"  {branch}: pull 失败（可能有本地修改），将使用远程版本进行比较")
+                            else:
+                                # 不在该分支上，远程引用已通过 fetch 更新
+                                print(f"  {branch}: 远程有更新（将使用 origin/{branch}）")
+                                if branch == base_branch:
+                                    result['base_updated'] = True
+                                else:
+                                    result['target_updated'] = True
+                        else:
+                            print(f"  {branch}: 已是最新")
+            except Exception as e:
+                print(f"  {branch}: 检查更新时出错 - {e}")
+
+    except Exception as e:
+        print(f"  分支更新检查异常: {e}")
+
+    return result

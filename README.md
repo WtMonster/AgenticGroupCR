@@ -106,6 +106,7 @@ git --version  # 验证是否已安装
 | `--mode` | `-m` | 运行模式 | `all` |
 | `--model` | `-M` | 指定模型（临时） | - |
 | `--no-context` | - | 禁用仓库上下文访问 | 启用 |
+| `--no-update` | - | 跳过仓库更新 | 自动更新 |
 | `--prompt-only` | - | 只生成 prompt，不调用 Claude | - |
 
 **运行模式**：
@@ -132,6 +133,7 @@ git --version  # 验证是否已安装
 | `--profile` | `-p` | 使用 Codex Profile | - |
 | `--reasoning-effort` | `-r` | 推理努力程度 | `medium` |
 | `--no-context` | - | 禁用仓库上下文访问 | 启用 |
+| `--no-update` | - | 跳过仓库更新 | 自动更新 |
 | `--prompt-only` | - | 只生成 prompt，不调用 Codex | - |
 
 **可用模型**：
@@ -159,6 +161,7 @@ git --version  # 验证是否已安装
 | `--mode` | `-m` | 运行模式 | `all` |
 | `--model` | `-M` | 指定模型（临时） | - |
 | `--no-context` | - | 禁用仓库上下文访问 | 启用 |
+| `--no-update` | - | 跳过仓库更新 | 自动更新 |
 | `--prompt-only` | - | 只生成 prompt，不调用 Copilot | - |
 
 **可用模型**：
@@ -433,4 +436,6 @@ if json_str:
 
 ## License
 
-与 Codex 项目保持一致。
+MIT License
+
+Copyright (c) 2025 zihaoDu

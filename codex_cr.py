@@ -19,7 +19,7 @@ from typing import Dict, Tuple, Any
 
 # 导入通用模块（与 claude_cr.py 共享）
 from repo_finder import find_repo_by_appid
-from git_utils import resolve_branch_comparison, get_name_status, get_diff
+from git_utils import resolve_branch_comparison, get_name_status, get_diff, update_repo
 from json_utils import extract_json_from_text, validate_review_schema, create_fallback_review, format_json
 from prompt_utils import (
     build_full_prompt,
@@ -399,6 +399,8 @@ def main():
                        choices=['minimal', 'low', 'medium', 'high', 'xhigh'],
                        default=None,
                        help='模型推理努力程度（默认: medium）')
+    parser.add_argument('--no-update', action='store_true',
+                       help='跳过仓库更新（默认会自动 fetch 并更新分支）')
 
     args = parser.parse_args()
 
@@ -415,7 +417,11 @@ def main():
         repo_root = find_repo_by_appid(search_root, args.appid)
         print(f"找到项目: {repo_root}")
 
-        # 2. 获取 git diff 信息（复用 git_utils）
+        # 2. 更新仓库（默认启用，除非指定 --no-update）
+        if not args.no_update:
+            update_repo(repo_root, args.basebranch, args.targetbranch)
+
+        # 3. 获取 git diff 信息（复用 git_utils）
         comparison = resolve_branch_comparison(repo_root, args.basebranch, args.targetbranch)
         name_status = get_name_status(repo_root, comparison)
         diff = get_diff(repo_root, comparison)

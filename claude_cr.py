@@ -18,7 +18,7 @@ from typing import Tuple
 
 # 导入自定义模块
 from repo_finder import find_repo_by_appid
-from git_utils import resolve_branch_comparison, get_name_status, get_diff
+from git_utils import resolve_branch_comparison, get_name_status, get_diff, update_repo
 from json_utils import extract_json_from_text, validate_review_schema, create_fallback_review, format_json
 from prompt_utils import (
     build_full_prompt,
@@ -311,6 +311,8 @@ def main():
     parser.add_argument('--model', '-M',
                        default=None,
                        help='指定 Claude 使用的模型（如 sonnet, opus, claude-sonnet-4-5-20250929）')
+    parser.add_argument('--no-update', action='store_true',
+                       help='跳过仓库更新（默认会自动 fetch 并更新分支）')
 
     args = parser.parse_args()
 
@@ -326,7 +328,11 @@ def main():
         repo_root = find_repo_by_appid(search_root, args.appid)
         print(f"找到项目: {repo_root}")
 
-        # 2. 获取 git diff 信息
+        # 2. 更新仓库（默认启用，除非指定 --no-update）
+        if not args.no_update:
+            update_repo(repo_root, args.basebranch, args.targetbranch)
+
+        # 3. 获取 git diff 信息
         comparison = resolve_branch_comparison(repo_root, args.basebranch, args.targetbranch)
         name_status = get_name_status(repo_root, comparison)
         diff = get_diff(repo_root, comparison)
