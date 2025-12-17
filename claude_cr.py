@@ -80,19 +80,23 @@ def run_claude_analysis(prompt: str, output_dir: Path = None, mode: str = "revie
             "安装方法: npm install -g @anthropic-ai/claude-code"
         )
 
-    # 获取 schema 文件路径
+    # 获取 schema 文件路径并读取内容
     script_dir = Path(__file__).parent
     schema_file = script_dir / schema_files.get(mode)
 
     if not schema_file.exists():
         raise Exception(f"Schema 文件不存在: {schema_file}")
 
+    # 读取 schema 文件内容
+    with open(schema_file, 'r', encoding='utf-8') as f:
+        schema_content = f.read()
+
     # 构建 claude 命令
     claude_cmd = [
         'claude',
         '-p', '-',
         '--output-format', 'json',
-        '--json-schema', str(schema_file)
+        '--json-schema', schema_content
     ]
 
     # 准备 subprocess 参数
