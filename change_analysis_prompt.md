@@ -10,6 +10,36 @@
 - 专业技术术语（如 API、JSON、HTTP 等）
 - 英文缩写（如 PR、MR、CI/CD 等）
 
+## 代码片段要求
+
+**每个文件变更必须包含关键的代码示例**，以帮助快速理解变更内容：
+
+1. **code_snippet 字段**：在每个 file_changes 项中添加 `code_snippet` 对象，包含以下信息：
+   - `file_path`: 文件路径
+   - `diff`: 统一 diff 格式的代码变更，展示关键变更
+     - 使用 `+` 标记新增的代码行
+     - 使用 `-` 标记删除的代码行
+     - 包含必要的上下文行（前后 2-3 行）
+   - `lines_added`: 新增行数
+   - `lines_deleted`: 删除行数
+
+2. **示例格式**：
+   ```json
+   {
+     "code_snippet": {
+       "file_path": "src/api/user.py",
+       "diff": " class UserAPI:\n     def get_user(self, user_id):\n-        return db.query(user_id)\n+        user = db.query(user_id)\n+        return self._sanitize(user)",
+       "lines_added": 2,
+       "lines_deleted": 1
+     }
+   }
+   ```
+
+3. **重要提示**：
+   - 代码片段应展示最关键的变更，长度控制在 15-30 行
+   - 优先展示核心逻辑变更，而非样板代码
+   - diff 格式必须准确反映实际变更
+
 ## 任务目标
 
 分析提供的 git diff 信息，生成：

@@ -337,6 +337,92 @@ def generate_html_header(title: str) -> str:
             font-size: 14px;
         }}
 
+        /* 代码 diff 样式 */
+        .code-diff {{
+            background: #fff;
+            border: 1px solid #d0d7de;
+            border-radius: 6px;
+            margin: 15px 0;
+            overflow: hidden;
+            font-family: 'Monaco', 'Menlo', 'Courier New', monospace;
+            font-size: 13px;
+        }}
+
+        .diff-table {{
+            width: 100%;
+            border-collapse: collapse;
+            table-layout: fixed;
+        }}
+
+        .diff-line-number {{
+            width: 40px;
+            padding: 0 10px;
+            text-align: right;
+            vertical-align: top;
+            color: rgba(27,31,36,0.3);
+            user-select: none;
+            border-right: 1px solid #d0d7de;
+        }}
+
+        .diff-line-content {{
+            padding: 0 10px;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+        }}
+
+        .diff-line-add {{
+            background-color: #e6ffec;
+        }}
+
+        .diff-line-add .diff-line-content {{
+            background-color: #ccffd8;
+        }}
+
+        .diff-line-delete {{
+            background-color: #ffebe9;
+        }}
+
+        .diff-line-delete .diff-line-content {{
+            background-color: #ffd7d5;
+        }}
+
+        .diff-line-context {{
+            background-color: #fff;
+        }}
+
+        .diff-line-add .diff-marker {{
+            color: #1a7f37;
+            font-weight: bold;
+        }}
+
+        .diff-line-delete .diff-marker {{
+            color: #cf222e;
+            font-weight: bold;
+        }}
+
+        .diff-file-header {{
+            background: #f6f8fa;
+            padding: 10px 15px;
+            border-bottom: 1px solid #d0d7de;
+            font-weight: 600;
+            color: #24292f;
+        }}
+
+        .diff-stats {{
+            display: inline-block;
+            margin-left: 10px;
+            font-size: 12px;
+            font-weight: normal;
+        }}
+
+        .diff-stats-add {{
+            color: #1a7f37;
+        }}
+
+        .diff-stats-delete {{
+            color: #cf222e;
+        }}
+
         @media print {{
             body {{
                 background: white;
@@ -437,6 +523,11 @@ def generate_review_report(data: Dict[str, Any]) -> str:
                     html += f'<strong>行号:</strong> {line_range.get("start", "?")} - {line_range.get("end", "?")}\n'
                 html += '</div>\n'
 
+            # 代码 diff 展示
+            code_snippet = finding.get('code_snippet')
+            if code_snippet:
+                html += render_code_diff(code_snippet)
+
             # 置信度
             conf = finding.get('confidence_score', 0)
             html += f'<p><small>置信度: <span class="confidence-score {get_confidence_class(conf)}">{conf:.0%}</span></small></p>\n'
@@ -492,6 +583,11 @@ def generate_analyze_report(data: Dict[str, Any]) -> str:
             for kc in key_changes:
                 html += f'<li>{kc}</li>\n'
             html += '</ul>\n'
+
+        # 代码 diff 展示
+        code_snippet = change.get('code_snippet')
+        if code_snippet:
+            html += render_code_diff(code_snippet)
 
         html += f'<p><strong>影响:</strong> {change.get("impact", "未说明")}</p>\n'
         html += '</div>\n'
@@ -600,6 +696,11 @@ def generate_priority_report(data: Dict[str, Any]) -> str:
                 html += f'<li>{fp}</li>\n'
             html += '</ul>\n'
 
+        # 代码 diff 展示
+        code_snippet = area.get('code_snippet')
+        if code_snippet:
+            html += render_code_diff(code_snippet)
+
         minutes = area.get('estimated_minutes', 0)
         html += f'<p><span class="time-estimate">⏱️ 预估 {minutes} 分钟</span></p>\n'
 
@@ -683,6 +784,114 @@ def get_type_badge(change_type: str) -> str:
     }
     badge_class, label = type_map.get(change_type, ('badge-low', change_type))
     return f'<span class="badge {badge_class}">{label}</span>'
+
+
+def render_code_diff(code_snippet: Dict[str, Any]) -> str:
+    """
+    渲染代码 diff（GitHub 风格）
+
+    Args:
+        code_snippet: 代码片段信息，包含：
+            - file_path: 文件路径（可选）
+            - old_code: 旧代码（可选）
+            - new_code: 新代码（可选）
+            - diff: 统一 diff 格式（可选）
+            - lines_added: 新增行数（可选）
+            - lines_deleted: 删除行数（可选）
+
+    Returns:
+        HTML 代码 diff
+    """
+    if not code_snippet or not isinstance(code_snippet, dict):
+        return ''
+
+    html = '<div class="code-diff">\n'
+
+    # 文件头
+    file_path = code_snippet.get('file_path', '')
+    lines_added = code_snippet.get('lines_added', 0)
+    lines_deleted = code_snippet.get('lines_deleted', 0)
+
+    if file_path or lines_added or lines_deleted:
+        html += '<div class="diff-file-header">\n'
+        if file_path:
+            html += f'<span>{file_path}</span>\n'
+        if lines_added or lines_deleted:
+            html += '<span class="diff-stats">\n'
+            if lines_added:
+                html += f'<span class="diff-stats-add">+{lines_added}</span> '
+            if lines_deleted:
+                html += f'<span class="diff-stats-delete">-{lines_deleted}</span>'
+            html += '</span>\n'
+        html += '</div>\n'
+
+    # 如果有统一 diff 格式，优先使用
+    if 'diff' in code_snippet and code_snippet['diff']:
+        html += '<table class="diff-table">\n'
+        diff_lines = code_snippet['diff'].split('\n')
+        old_line_num = 1
+        new_line_num = 1
+
+        for line in diff_lines:
+            # 跳过 diff 头部
+            if line.startswith('@@') or line.startswith('+++') or line.startswith('---') or line.startswith('diff '):
+                continue
+
+            if line.startswith('+'):
+                # 新增行
+                html += f'<tr class="diff-line-add">\n'
+                html += f'  <td class="diff-line-number"></td>\n'
+                html += f'  <td class="diff-line-number">{new_line_num}</td>\n'
+                html += f'  <td class="diff-line-content"><span class="diff-marker">+</span>{line[1:]}</td>\n'
+                html += '</tr>\n'
+                new_line_num += 1
+            elif line.startswith('-'):
+                # 删除行
+                html += f'<tr class="diff-line-delete">\n'
+                html += f'  <td class="diff-line-number">{old_line_num}</td>\n'
+                html += f'  <td class="diff-line-number"></td>\n'
+                html += f'  <td class="diff-line-content"><span class="diff-marker">-</span>{line[1:]}</td>\n'
+                html += '</tr>\n'
+                old_line_num += 1
+            else:
+                # 上下文行
+                html += f'<tr class="diff-line-context">\n'
+                html += f'  <td class="diff-line-number">{old_line_num}</td>\n'
+                html += f'  <td class="diff-line-number">{new_line_num}</td>\n'
+                html += f'  <td class="diff-line-content">{line}</td>\n'
+                html += '</tr>\n'
+                old_line_num += 1
+                new_line_num += 1
+
+        html += '</table>\n'
+
+    # 否则使用 old_code 和 new_code 对比
+    elif 'old_code' in code_snippet or 'new_code' in code_snippet:
+        html += '<table class="diff-table">\n'
+
+        old_code = code_snippet.get('old_code', '').split('\n') if code_snippet.get('old_code') else []
+        new_code = code_snippet.get('new_code', '').split('\n') if code_snippet.get('new_code') else []
+
+        # 显示删除的行
+        for i, line in enumerate(old_code, 1):
+            html += f'<tr class="diff-line-delete">\n'
+            html += f'  <td class="diff-line-number">{i}</td>\n'
+            html += f'  <td class="diff-line-number"></td>\n'
+            html += f'  <td class="diff-line-content"><span class="diff-marker">-</span>{line}</td>\n'
+            html += '</tr>\n'
+
+        # 显示新增的行
+        for i, line in enumerate(new_code, 1):
+            html += f'<tr class="diff-line-add">\n'
+            html += f'  <td class="diff-line-number"></td>\n'
+            html += f'  <td class="diff-line-number">{i}</td>\n'
+            html += f'  <td class="diff-line-content"><span class="diff-marker">+</span>{line}</td>\n'
+            html += '</tr>\n'
+
+        html += '</table>\n'
+
+    html += '</div>\n'
+    return html
 
 
 def generate_combined_html_header(title: str) -> str:
@@ -1022,6 +1231,92 @@ def generate_combined_html_header(title: str) -> str:
             color: #721c24;
         }}
 
+        /* 代码 diff 样式 */
+        .code-diff {{
+            background: #fff;
+            border: 1px solid #d0d7de;
+            border-radius: 6px;
+            margin: 15px 0;
+            overflow: hidden;
+            font-family: 'Monaco', 'Menlo', 'Courier New', monospace;
+            font-size: 13px;
+        }}
+
+        .diff-table {{
+            width: 100%;
+            border-collapse: collapse;
+            table-layout: fixed;
+        }}
+
+        .diff-line-number {{
+            width: 40px;
+            padding: 0 10px;
+            text-align: right;
+            vertical-align: top;
+            color: rgba(27,31,36,0.3);
+            user-select: none;
+            border-right: 1px solid #d0d7de;
+        }}
+
+        .diff-line-content {{
+            padding: 0 10px;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+        }}
+
+        .diff-line-add {{
+            background-color: #e6ffec;
+        }}
+
+        .diff-line-add .diff-line-content {{
+            background-color: #ccffd8;
+        }}
+
+        .diff-line-delete {{
+            background-color: #ffebe9;
+        }}
+
+        .diff-line-delete .diff-line-content {{
+            background-color: #ffd7d5;
+        }}
+
+        .diff-line-context {{
+            background-color: #fff;
+        }}
+
+        .diff-line-add .diff-marker {{
+            color: #1a7f37;
+            font-weight: bold;
+        }}
+
+        .diff-line-delete .diff-marker {{
+            color: #cf222e;
+            font-weight: bold;
+        }}
+
+        .diff-file-header {{
+            background: #f6f8fa;
+            padding: 10px 15px;
+            border-bottom: 1px solid #d0d7de;
+            font-weight: 600;
+            color: #24292f;
+        }}
+
+        .diff-stats {{
+            display: inline-block;
+            margin-left: 10px;
+            font-size: 12px;
+            font-weight: normal;
+        }}
+
+        .diff-stats-add {{
+            color: #1a7f37;
+        }}
+
+        .diff-stats-delete {{
+            color: #cf222e;
+        }}
+
         .footer {{
             margin-top: 50px;
             padding-top: 20px;
@@ -1146,6 +1441,11 @@ def generate_analyze_content(data: Dict[str, Any]) -> str:
                 html += f'<li>{kc}</li>\n'
             html += '</ul>\n'
 
+        # 代码 diff 展示
+        code_snippet = change.get('code_snippet')
+        if code_snippet:
+            html += render_code_diff(code_snippet)
+
         html += f'<p><strong>影响:</strong> {change.get("impact", "未说明")}</p>\n'
         html += '</div>\n'
 
@@ -1249,6 +1549,11 @@ def generate_priority_content(data: Dict[str, Any]) -> str:
             for fp in focus_points:
                 html += f'<li>{fp}</li>\n'
             html += '</ul>\n'
+
+        # 代码 diff 展示
+        code_snippet = area.get('code_snippet')
+        if code_snippet:
+            html += render_code_diff(code_snippet)
 
         minutes = area.get('estimated_minutes', 0)
         html += f'<p><span class="time-estimate">⏱️ 预估 {minutes} 分钟</span></p>\n'
@@ -1367,6 +1672,11 @@ def generate_review_content(data: Dict[str, Any]) -> str:
                 if line_range:
                     html += f'<strong>行号:</strong> {line_range.get("start", "?")} - {line_range.get("end", "?")}\n'
                 html += '</div>\n'
+
+            # 代码 diff 展示
+            code_snippet = finding.get('code_snippet')
+            if code_snippet:
+                html += render_code_diff(code_snippet)
 
             # 置信度
             conf = finding.get('confidence_score', 0)

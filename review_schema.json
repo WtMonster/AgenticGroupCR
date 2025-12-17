@@ -48,6 +48,36 @@
                 }
               }
             }
+          },
+          "code_snippet": {
+            "type": "object",
+            "description": "Code snippet showing the issue with diff format",
+            "properties": {
+              "file_path": {
+                "type": "string",
+                "description": "File path (same as code_location)"
+              },
+              "diff": {
+                "type": "string",
+                "description": "Unified diff format showing the relevant code with +/- markers"
+              },
+              "old_code": {
+                "type": "string",
+                "description": "Old code (alternative to diff)"
+              },
+              "new_code": {
+                "type": "string",
+                "description": "New code (alternative to diff)"
+              },
+              "lines_added": {
+                "type": "integer",
+                "description": "Number of lines added"
+              },
+              "lines_deleted": {
+                "type": "integer",
+                "description": "Number of lines deleted"
+              }
+            }
           }
         }
       }

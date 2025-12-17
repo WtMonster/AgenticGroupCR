@@ -174,11 +174,11 @@ def generate_html_report(json_file: Path, mode: str) -> Path:
 
         # 根据模式生成对应的 HTML
         if mode == 'review':
-            html = generate_review_report(data)
+            html = generate_review_report(data["structured_output"])
         elif mode == 'analyze':
-            html = generate_analyze_report(data)
+            html = generate_analyze_report(data["structured_output"])
         elif mode == 'priority':
-            html = generate_priority_report(data)
+            html = generate_priority_report(data["structured_output"])
         else:
             print(f"警告: 未知模式 {mode}，跳过 HTML 生成")
             return None

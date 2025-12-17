@@ -11,6 +11,36 @@ You are acting as a reviewer for a proposed code change made by another engineer
 - 英文缩写（如 PR、MR、CI/CD 等）
 - JSON 字段名（如 "findings"、"overall_correctness" 等必须保持英文）
 
+## 代码片段要求
+
+**每个 finding 必须包含相关的代码片段**，以帮助 reviewer 快速理解问题：
+
+1. **code_snippet 字段**：在每个 finding 中添加 `code_snippet` 对象，包含以下信息：
+   - `file_path`: 文件路径（与 code_location 一致）
+   - `diff`: 统一 diff 格式的代码变更，展示问题相关的代码行
+     - 使用 `+` 标记新增的代码行
+     - 使用 `-` 标记删除的代码行
+     - 包含必要的上下文行（前后 2-3 行）
+   - `lines_added`: 新增行数
+   - `lines_deleted`: 删除行数
+
+2. **示例格式**：
+   ```json
+   {
+     "code_snippet": {
+       "file_path": "src/main.py",
+       "diff": " def calculate(x, y):\n-    return x / y\n+    if y == 0:\n+        return 0\n+    return x / y",
+       "lines_added": 3,
+       "lines_deleted": 1
+     }
+   }
+   ```
+
+3. **重要提示**：
+   - 代码片段应聚焦于问题所在，长度控制在 10-20 行
+   - 必须包含足够的上下文以理解问题
+   - diff 格式必须准确反映实际变更
+
 ## Review Guidelines
 
 Below are some default guidelines for determining whether the original author would appreciate the issue being flagged.
