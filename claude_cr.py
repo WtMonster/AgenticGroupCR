@@ -11,6 +11,9 @@ Claude Code Review Tool - Python 版本
 import sys
 import subprocess
 import argparse
+import threading
+import itertools
+import time
 from pathlib import Path
 
 # 导入自定义模块
@@ -51,11 +54,10 @@ def run_claude_analysis(prompt: str, output_dir: Path = None, mode: str = "revie
         Exception: Claude CLI 调用失败
     """
     mode_names = {
-        "review": "code review",
+        "review": "Code Review",
         "analyze": "代码变更解析",
-        "priority": "review 优先级评估"
+        "priority": "Review 优先级评估"
     }
-    print(f"正在调用 Claude CLI 进行 {mode_names.get(mode, mode)}...")
 
     if with_context and repo_root:
         print(f"✓ 启用仓库上下文访问模式")
@@ -83,16 +85,40 @@ def run_claude_analysis(prompt: str, output_dir: Path = None, mode: str = "revie
     if with_context and repo_root:
         run_kwargs['cwd'] = str(repo_root)
 
-    # 调用 claude
-    result = subprocess.run(
-        ['claude', '-p', '-'],
-        **run_kwargs
-    )
+    # Loading 动画设置
+    loading = True
+    spinner = itertools.cycle(['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'])
 
-    if result.returncode != 0:
-        raise Exception(f"claude 命令执行失败:\n{result.stderr}")
+    def show_loading():
+        """显示 loading 动画"""
+        while loading:
+            sys.stdout.write(f'\r正在生成 [{mode_names.get(mode, mode)}] 报告 {next(spinner)} ')
+            sys.stdout.flush()
+            time.sleep(0.1)
 
-    raw_output = result.stdout
+    # 启动 loading 动画线程
+    loading_thread = threading.Thread(target=show_loading, daemon=True)
+    loading_thread.start()
+
+    try:
+        # 调用 claude
+        result = subprocess.run(
+            ['claude', '-p', '-'],
+            **run_kwargs
+        )
+
+        if result.returncode != 0:
+            raise Exception(f"claude 命令执行失败:\n{result.stderr}")
+
+        raw_output = result.stdout
+    finally:
+        # 停止 loading 动画
+        loading = False
+        loading_thread.join(timeout=1)
+        # 清除 loading 行并显示完成信息
+        sys.stdout.write('\r' + ' ' * 80 + '\r')
+        sys.stdout.flush()
+        print(f"✓ [{mode_names.get(mode, mode)}] 报告生成完成\n")
 
     # 保存原始输出（用于调试）
     if output_dir:
