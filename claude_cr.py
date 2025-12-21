@@ -12,6 +12,7 @@ import sys
 import subprocess
 import argparse
 import threading
+import json
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Tuple
@@ -134,13 +135,14 @@ def run_claude_analysis(prompt: str, output_dir: Path = None, mode: str = "revie
     return format_json(json_data)
 
 
-def generate_html_report(json_file: Path, mode: str) -> Path:
+def generate_html_report(json_file: Path, mode: str, diff_content: str = None) -> Path:
     """
     根据 JSON 结果生成 HTML 报告
 
     Args:
         json_file: JSON 结果文件路径
         mode: 模式（review/analyze/priority）
+        diff_content: git diff 输出内容，用于展示代码变更
 
     Returns:
         生成的 HTML 文件路径
@@ -151,7 +153,7 @@ def generate_html_report(json_file: Path, mode: str) -> Path:
 
         # 根据模式生成对应的 HTML
         if mode == 'review':
-            html = generate_review_report(data)
+            html = generate_review_report(data, diff_content)
         elif mode == 'analyze':
             html = generate_analyze_report(data)
         elif mode == 'priority':
@@ -173,6 +175,115 @@ def generate_html_report(json_file: Path, mode: str) -> Path:
 
 
 # 线程安全的打印锁
+
+# 定义各模式的 JSON Schema，用于 --json-schema 参数强制输出格式
+JSON_SCHEMAS = {
+    'review': {
+        "type": "object",
+        "properties": {
+            "findings": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "title": {"type": "string"},
+                        "body": {"type": "string"},
+                        "confidence_score": {"type": "number"},
+                        "priority": {"type": "integer"},
+                        "code_location": {
+                            "type": "object",
+                            "properties": {
+                                "absolute_file_path": {"type": "string"},
+                                "line_range": {
+                                    "type": "object",
+                                    "properties": {
+                                        "start": {"type": "integer"},
+                                        "end": {"type": "integer"}
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "required": ["title", "body", "priority"]
+                }
+            },
+            "overall_correctness": {"type": "string"},
+            "overall_explanation": {"type": "string"},
+            "overall_confidence_score": {"type": "number"}
+        },
+        "required": ["findings", "overall_correctness"]
+    },
+    'analyze': {
+        "type": "object",
+        "properties": {
+            "change_summary": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string"},
+                    "purpose": {"type": "string"},
+                    "scope": {"type": "string"},
+                    "type": {"type": "string"},
+                    "risk_level": {"type": "string"},
+                    "estimated_complexity": {"type": "string"}
+                },
+                "required": ["title", "purpose"]
+            },
+            "file_changes": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "file_path": {"type": "string"},
+                        "change_type": {"type": "string"},
+                        "purpose": {"type": "string"},
+                        "key_changes": {"type": "array", "items": {"type": "string"}},
+                        "impact": {"type": "string"}
+                    }
+                }
+            },
+            "architecture_impact": {"type": "object"},
+            "migration_notes": {"type": "array", "items": {"type": "string"}},
+            "confidence_score": {"type": "number"}
+        },
+        "required": ["change_summary", "file_changes"]
+    },
+    'priority': {
+        "type": "object",
+        "properties": {
+            "review_summary": {
+                "type": "object",
+                "properties": {
+                    "total_files": {"type": "integer"},
+                    "high_priority_files": {"type": "integer"},
+                    "medium_priority_files": {"type": "integer"},
+                    "low_priority_files": {"type": "integer"},
+                    "estimated_total_minutes": {"type": "integer"},
+                    "recommended_reviewers": {"type": "integer"},
+                    "complexity_score": {"type": "number"}
+                }
+            },
+            "priority_areas": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "priority": {"type": "string"},
+                        "file_path": {"type": "string"},
+                        "reason": {"type": "string"},
+                        "focus_points": {"type": "array", "items": {"type": "string"}},
+                        "estimated_minutes": {"type": "integer"}
+                    }
+                }
+            },
+            "file_priorities": {"type": "array"},
+            "review_strategy": {"type": "object"},
+            "time_breakdown": {"type": "object"},
+            "confidence_score": {"type": "number"}
+        },
+        "required": ["review_summary", "priority_areas"]
+    }
+}
+
 print_lock = threading.Lock()
 
 
@@ -182,6 +293,75 @@ def thread_safe_print(*args, **kwargs):
         print(*args, **kwargs)
 
 
+def format_tool_call_detail(tool_name: str, tool_input: dict) -> str:
+    """
+    格式化工具调用详情，展示关键参数
+
+    Args:
+        tool_name: 工具名称
+        tool_input: 工具输入参数
+
+    Returns:
+        格式化的工具调用描述
+    """
+    # 根据不同工具类型提取关键信息
+    if tool_name == 'Read':
+        file_path = tool_input.get('file_path', '')
+        # 只显示文件名，不显示完整路径
+        filename = file_path.split('/')[-1] if file_path else 'unknown'
+        return f"Read: {filename}"
+
+    elif tool_name == 'Grep':
+        pattern = tool_input.get('pattern', '')
+        path = tool_input.get('path', '.')
+        return f"Grep: '{pattern}' in {path}"
+
+    elif tool_name == 'Glob':
+        pattern = tool_input.get('pattern', '')
+        return f"Glob: {pattern}"
+
+    elif tool_name == 'Edit':
+        file_path = tool_input.get('file_path', '')
+        filename = file_path.split('/')[-1] if file_path else 'unknown'
+        return f"Edit: {filename}"
+
+    elif tool_name == 'Write':
+        file_path = tool_input.get('file_path', '')
+        filename = file_path.split('/')[-1] if file_path else 'unknown'
+        return f"Write: {filename}"
+
+    elif tool_name == 'Bash':
+        command = tool_input.get('command', '')
+        # 截断过长的命令
+        if len(command) > 50:
+            command = command[:50] + '...'
+        return f"Bash: {command}"
+
+    elif tool_name == 'Task':
+        description = tool_input.get('description', '')
+        return f"Task: {description}"
+
+    elif tool_name.startswith('mcp__'):
+        # MCP 工具，提取简短名称
+        short_name = tool_name.replace('mcp__', '').replace('__', '/')
+        return f"MCP: {short_name}"
+
+    else:
+        # 其他工具，尝试提取常见参数
+        if 'file_path' in tool_input:
+            filename = tool_input['file_path'].split('/')[-1]
+            return f"{tool_name}: {filename}"
+        elif 'pattern' in tool_input:
+            return f"{tool_name}: {tool_input['pattern']}"
+        elif 'query' in tool_input:
+            query = tool_input['query']
+            if len(query) > 30:
+                query = query[:30] + '...'
+            return f"{tool_name}: {query}"
+        else:
+            return f"{tool_name}"
+
+
 def run_single_mode_analysis(
     mode: str,
     prompt: str,
@@ -189,10 +369,14 @@ def run_single_mode_analysis(
     repo_root: Path,
     result_filename: str,
     with_context: bool,
-    model: str = None
+    model: str = None,
+    diff_content: str = None
 ) -> Tuple[str, str, bool, str]:
     """
     运行单个模式的分析（用于并行执行）
+
+    使用 --output-format stream-json --verbose 获取实时工具调用信息
+    使用 --json-schema 强制输出符合指定格式的 JSON
 
     Args:
         mode: 模式（review/analyze/priority）
@@ -202,71 +386,148 @@ def run_single_mode_analysis(
         result_filename: 结果文件名
         with_context: 是否启用仓库上下文
         model: 指定使用的模型
+        diff_content: git diff 输出内容，用于生成报告时展示代码变更
 
     Returns:
         (mode, result_filename, success, result_or_error)
     """
+    # 定义各模式的必需字段
+    mode_required_fields = {
+        'review': ['findings', 'overall_correctness'],
+        'analyze': ['change_summary', 'file_changes'],
+        'priority': ['review_summary', 'priority_areas']
+    }
+    
+    def is_valid_for_mode(data: dict, target_mode: str) -> bool:
+        """检查数据是否包含指定模式的所有必需字段"""
+        if target_mode not in mode_required_fields:
+            return True
+        required = mode_required_fields[target_mode]
+        return all(field in data for field in required)
+    
     try:
-        thread_safe_print(f"\n[{mode}] 开始分析...")
+        thread_safe_print(f"[{mode}] 分析中...")
 
-        # 准备 subprocess 参数
-        run_kwargs = {
-            'input': prompt,
-            'capture_output': True,
-            'text': True
-        }
-        if with_context and repo_root:
-            run_kwargs['cwd'] = str(repo_root)
-
-        # 构建 Claude 命令
-        cmd = ['claude', '-p']
+        # 构建 Claude 命令 - 使用 stream-json 格式获取工具调用信息
+        cmd = ['claude', '-p', '--output-format', 'stream-json', '--verbose']
+        
+        # 添加 JSON Schema 强制输出格式
+        if mode in JSON_SCHEMAS:
+            schema_str = json.dumps(JSON_SCHEMAS[mode])
+            cmd.extend(['--json-schema', schema_str])
+        
         if model:
             cmd.extend(['--model', model])
-            thread_safe_print(f"[{mode}] 使用模型: {model}")
         cmd.append('-')
 
-        # 调用 Claude
-        result = subprocess.run(cmd, **run_kwargs)
+        # 启动进程
+        process = subprocess.Popen(
+            cmd,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            cwd=str(repo_root) if with_context and repo_root else None
+        )
 
-        if result.returncode != 0:
-            raise Exception(f"claude 命令执行失败:\n{result.stderr}")
+        # 发送 prompt 并关闭 stdin
+        process.stdin.write(prompt)
+        process.stdin.close()
 
-        raw_output = result.stdout
+        # 实时读取输出并解析工具调用
+        final_result = None
+        structured_output = None  # 用于存储 StructuredOutput 工具调用的结果
+        raw_output_lines = []
 
-        # 提取 JSON
-        json_data = extract_json_from_text(raw_output, mode)
+        for line in process.stdout:
+            raw_output_lines.append(line)
+            try:
+                event = json.loads(line.strip())
+                event_type = event.get('type')
 
-        if json_data is None:
+                # 解析工具调用事件
+                if event_type == 'assistant':
+                    content = event.get('message', {}).get('content', [])
+                    for item in content:
+                        if item.get('type') == 'tool_use':
+                            tool_name = item.get('name', 'unknown')
+                            tool_input = item.get('input', {})
+                            
+                            # 检查是否是 StructuredOutput 工具调用
+                            if tool_name == 'StructuredOutput':
+                                # StructuredOutput 的 input 就是我们需要的 JSON 数据
+                                # 只有当 input 非空且包含必需字段时才使用
+                                if tool_input and len(tool_input) > 0 and is_valid_for_mode(tool_input, mode):
+                                    structured_output = tool_input
+                                thread_safe_print(f"[{mode}] StructuredOutput")
+                            else:
+                                # 格式化其他工具调用详情
+                                detail = format_tool_call_detail(tool_name, tool_input)
+                                thread_safe_print(f"[{mode}] {detail}")
+
+                # 获取最终结果
+                elif event_type == 'result':
+                    final_result = event.get('result', '')
+
+            except json.JSONDecodeError:
+                pass
+
+        # 等待进程结束
+        process.wait()
+
+        if process.returncode != 0:
+            stderr = process.stderr.read()
+            raise Exception(f"claude 命令执行失败:\n{stderr}")
+
+        # 保存原始输出
+        if output_dir:
+            raw_output_file = output_dir / 'raw_output.txt'
+            with open(raw_output_file, 'a', encoding='utf-8') as f:
+                f.write(f"\n\n{'='*50}\n")
+                f.write(f"Mode: {mode}\n")
+                f.write(f"{'='*50}\n\n")
+                f.write(''.join(raw_output_lines))
+
+        # 优先使用有效的 StructuredOutput 工具调用的结果
+        json_data = None
+        if structured_output is not None and len(structured_output) > 0:
+            json_data = structured_output
+        
+        # 如果 StructuredOutput 无效或为空，从 final_result 中提取
+        if json_data is None or not is_valid_for_mode(json_data, mode):
+            raw_output = final_result if final_result else ''.join(raw_output_lines)
+            extracted = extract_json_from_text(raw_output, mode)
+            if extracted and is_valid_for_mode(extracted, mode):
+                json_data = extracted
+
+        if json_data is None or (isinstance(json_data, dict) and len(json_data) == 0):
             thread_safe_print(f"[{mode}] 警告: 无法从输出中提取有效的 JSON")
             if mode == "review":
                 fallback = create_fallback_review("无法提取 JSON")
                 result_str = format_json(fallback)
             else:
-                result_str = raw_output
+                # 对于 analyze 和 priority 模式，也创建一个空的 fallback
+                result_str = format_json({})
         elif mode == "review" and not validate_review_schema(json_data):
             thread_safe_print(f"[{mode}] 警告: 输出不符合预期的 schema")
             fallback = create_fallback_review("Schema 验证失败")
             result_str = format_json(fallback)
         else:
-            thread_safe_print(f"[{mode}] ✓ 输出格式验证通过")
             result_str = format_json(json_data)
 
         # 保存结果
         result_file = output_dir / result_filename
         with open(result_file, 'w', encoding='utf-8') as f:
             f.write(result_str)
-        thread_safe_print(f"[{mode}] ✓ JSON 结果已保存到: {result_file}")
 
         # 生成 HTML 报告
-        html_file = generate_html_report(result_file, mode)
-        if html_file:
-            thread_safe_print(f"[{mode}] ✓ HTML 报告已生成: {html_file}")
+        generate_html_report(result_file, mode, diff_content)
 
-        thread_safe_print(f"[{mode}] ✓ 分析完成")
+        thread_safe_print(f"[{mode}] ✓ 完成")
         return (mode, result_filename, True, result_str)
 
     except Exception as e:
-        thread_safe_print(f"[{mode}] ✗ 分析失败: {e}")
+        thread_safe_print(f"[{mode}] ✗ 失败: {e}")
         return (mode, result_filename, False, str(e))
 
 
@@ -313,6 +574,8 @@ def main():
                        help='指定 Claude 使用的模型（如 sonnet, opus, claude-sonnet-4-5-20250929）')
     parser.add_argument('--no-update', action='store_true',
                        help='跳过仓库更新（默认会自动 fetch 并更新分支）')
+    parser.add_argument('--sequential', action='store_true',
+                       help='串行执行所有模式（默认 all 模式下并行执行）')
 
     args = parser.parse_args()
 
@@ -393,7 +656,8 @@ def main():
             # 6. 并行执行所有模式的分析
             print(f"\n{'='*50}")
             if len(modes_to_run) > 1:
-                print(f"并行运行 {len(modes_to_run)} 个模式: {', '.join(modes_to_run)} (Claude)")
+                exec_mode = "串行" if args.sequential else "并行"
+                print(f"{exec_mode}运行 {len(modes_to_run)} 个模式: {', '.join(modes_to_run)} (Claude)")
             else:
                 print(f"运行模式: {modes_to_run[0]} (Claude)")
             if with_context:
@@ -402,15 +666,18 @@ def main():
 
             results = {}
 
-            if len(modes_to_run) == 1:
-                # 单模式：串行执行
-                mode = modes_to_run[0]
-                config = mode_configs[mode]
-                mode_result = run_single_mode_analysis(
-                    mode, config['prompt'], output_dir, repo_root, config['result_filename'], with_context,
-                    model=args.model
-                )
-                results[mode] = mode_result
+            # 提取 diff 内容用于报告展示
+            diff_content = diff[0] if diff else None
+
+            if len(modes_to_run) == 1 or args.sequential:
+                # 串行执行（单模式或指定 --sequential）
+                for mode in modes_to_run:
+                    config = mode_configs[mode]
+                    mode_result = run_single_mode_analysis(
+                        mode, config['prompt'], output_dir, repo_root, config['result_filename'], with_context,
+                        model=args.model, diff_content=diff_content
+                    )
+                    results[mode] = mode_result
             else:
                 # 多模式：并行执行
                 with ThreadPoolExecutor(max_workers=3) as executor:
@@ -420,7 +687,7 @@ def main():
                         future = executor.submit(
                             run_single_mode_analysis,
                             mode, config['prompt'], output_dir, repo_root, config['result_filename'], with_context,
-                            args.model
+                            args.model, diff_content
                         )
                         futures[future] = mode
 
@@ -481,7 +748,7 @@ def main():
                         pass
 
                 # 生成合并报告
-                combined_html = generate_combined_report(analyze_data, priority_data, review_data)
+                combined_html = generate_combined_report(analyze_data, priority_data, review_data, diff_content)
                 combined_file = output_dir / 'report.html'
                 with open(combined_file, 'w', encoding='utf-8') as f:
                     f.write(combined_html)

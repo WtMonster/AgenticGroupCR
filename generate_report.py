@@ -26,6 +26,361 @@ def load_json_file(file_path: str) -> Dict[str, Any]:
         raise Exception(f"加载 JSON 文件失败: {e}")
 
 
+def parse_diff_to_file_hunks(diff_content: str) -> Dict[str, List[dict]]:
+    """
+    解析 git diff 输出，按文件组织 hunks
+    
+    Args:
+        diff_content: git diff 的完整输出
+    
+    Returns:
+        dict: {文件路径: [hunk1, hunk2, ...]}
+        每个 hunk 包含: {
+            'old_start': int,  # 旧文件起始行
+            'old_count': int,  # 旧文件行数
+            'new_start': int,  # 新文件起始行
+            'new_count': int,  # 新文件行数
+            'lines': [{'type': '+'/'-'/' ', 'content': str, 'old_line': int|None, 'new_line': int|None}, ...]
+        }
+    """
+    if not diff_content:
+        return {}
+    
+    file_hunks = {}
+    current_file = None
+    current_hunk = None
+    old_line = 0
+    new_line = 0
+    
+    lines = diff_content.split('\n')
+    i = 0
+    
+    while i < len(lines):
+        line = lines[i]
+        
+        # 检测文件头: diff --git a/path b/path
+        if line.startswith('diff --git '):
+            # 提取文件路径 (取 b/ 后面的路径)
+            parts = line.split(' b/')
+            if len(parts) >= 2:
+                current_file = parts[-1]
+                if current_file not in file_hunks:
+                    file_hunks[current_file] = []
+            current_hunk = None
+        
+        # 检测 hunk 头: @@ -old_start,old_count +new_start,new_count @@
+        elif line.startswith('@@') and current_file:
+            import re
+            match = re.match(r'@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@', line)
+            if match:
+                old_start = int(match.group(1))
+                old_count = int(match.group(2)) if match.group(2) else 1
+                new_start = int(match.group(3))
+                new_count = int(match.group(4)) if match.group(4) else 1
+                
+                current_hunk = {
+                    'old_start': old_start,
+                    'old_count': old_count,
+                    'new_start': new_start,
+                    'new_count': new_count,
+                    'header': line,
+                    'lines': []
+                }
+                file_hunks[current_file].append(current_hunk)
+                old_line = old_start
+                new_line = new_start
+        
+        # 解析 hunk 内容
+        elif current_hunk is not None:
+            if line.startswith('+') and not line.startswith('+++'):
+                current_hunk['lines'].append({
+                    'type': '+',
+                    'content': line[1:],
+                    'old_line': None,
+                    'new_line': new_line
+                })
+                new_line += 1
+            elif line.startswith('-') and not line.startswith('---'):
+                current_hunk['lines'].append({
+                    'type': '-',
+                    'content': line[1:],
+                    'old_line': old_line,
+                    'new_line': None
+                })
+                old_line += 1
+            elif line.startswith(' '):
+                current_hunk['lines'].append({
+                    'type': ' ',
+                    'content': line[1:],
+                    'old_line': old_line,
+                    'new_line': new_line
+                })
+                old_line += 1
+                new_line += 1
+            elif line.startswith('\\'):
+                # "\ No newline at end of file"
+                pass
+            elif line == '':
+                # 空行可能是 hunk 结束
+                pass
+        
+        i += 1
+    
+    return file_hunks
+
+
+def format_diff_hunk_html(hunk: dict, file_path: str = "", highlight_start: int = 0, highlight_end: int = 0) -> str:
+    """
+    将 diff hunk 格式化为 GitHub/GitLab 风格的 HTML
+    
+    Args:
+        hunk: 解析后的 hunk 数据
+        file_path: 文件路径
+        highlight_start: 需要高亮的起始行号（新文件行号）
+        highlight_end: 需要高亮的结束行号（新文件行号）
+    
+    Returns:
+        HTML 格式的 diff 片段
+    """
+    if not hunk or not hunk.get('lines'):
+        return ""
+    
+    html = '<div class="diff-hunk">\n'
+    
+    # Hunk 头部
+    header = hunk.get('header', '')
+    if header:
+        escaped_header = header.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+        html += f'<div class="diff-hunk-header">{escaped_header}</div>\n'
+    
+    html += '<table class="diff-table">\n'
+    
+    for line_info in hunk['lines']:
+        line_type = line_info['type']
+        content = line_info['content']
+        old_line = line_info.get('old_line')
+        new_line = line_info.get('new_line')
+        
+        # HTML 转义
+        escaped_content = (content
+                          .replace('&', '&amp;')
+                          .replace('<', '&lt;')
+                          .replace('>', '&gt;'))
+        
+        # 保留空格显示
+        if not escaped_content:
+            escaped_content = '&nbsp;'
+        
+        # 根据类型设置样式
+        if line_type == '+':
+            row_class = 'diff-line-add'
+            prefix = '+'
+            old_num = ''
+            new_num = str(new_line) if new_line else ''
+        elif line_type == '-':
+            row_class = 'diff-line-del'
+            prefix = '-'
+            old_num = str(old_line) if old_line else ''
+            new_num = ''
+        else:
+            row_class = 'diff-line-ctx'
+            prefix = ' '
+            old_num = str(old_line) if old_line else ''
+            new_num = str(new_line) if new_line else ''
+        
+        # 检查是否需要标记行号（AI 评论指出的行）
+        line_num_class = ''
+        if highlight_start > 0 and highlight_end > 0 and new_line:
+            if highlight_start <= new_line <= highlight_end:
+                line_num_class = ' diff-line-num-marked'
+        
+        html += f'<tr class="{row_class}">'
+        html += f'<td class="diff-line-num diff-line-num-old{line_num_class}">{old_num}</td>'
+        html += f'<td class="diff-line-num diff-line-num-new{line_num_class}">{new_num}</td>'
+        html += f'<td class="diff-line-prefix">{prefix}</td>'
+        html += f'<td class="diff-line-content"><pre>{escaped_content}</pre></td>'
+        html += '</tr>\n'
+    
+    html += '</table>\n'
+    html += '</div>\n'
+    
+    return html
+
+
+def get_diff_snippet_for_finding(
+    code_location: dict, 
+    diff_content: str = None,
+    file_hunks: Dict[str, List[dict]] = None
+) -> str:
+    """
+    根据 finding 的 code_location 从 diff 中提取相关片段
+    
+    Args:
+        code_location: 包含 absolute_file_path 和 line_range 的字典
+        diff_content: git diff 的原始输出（如果 file_hunks 未提供）
+        file_hunks: 已解析的 diff hunks（优先使用）
+    
+    Returns:
+        HTML 格式的 diff 片段，如果无法匹配则返回空字符串
+    """
+    if not code_location:
+        return ""
+    
+    file_path = code_location.get('absolute_file_path', '')
+    line_range = code_location.get('line_range', {})
+
+    if not file_path:
+        return ""
+
+    # 处理 line_range 可能是数组 [start, end] 或对象 {"start": x, "end": y} 的情况
+    if isinstance(line_range, list):
+        start_line = line_range[0] if len(line_range) > 0 else 0
+        end_line = line_range[1] if len(line_range) > 1 else start_line
+    else:
+        start_line = line_range.get('start', 0) if isinstance(line_range, dict) else 0
+        end_line = line_range.get('end', start_line) if isinstance(line_range, dict) else start_line
+    
+    # 解析 diff（如果需要）
+    if file_hunks is None and diff_content:
+        file_hunks = parse_diff_to_file_hunks(diff_content)
+    
+    if not file_hunks:
+        return ""
+    
+    # 尝试匹配文件路径
+    # AI 可能返回绝对路径或相对路径，需要灵活匹配
+    matched_file = None
+    file_path_normalized = file_path.replace('\\', '/')
+    
+    for diff_file in file_hunks.keys():
+        # 完全匹配
+        if diff_file == file_path_normalized:
+            matched_file = diff_file
+            break
+        # 文件名匹配（diff 中通常是相对路径）
+        if file_path_normalized.endswith('/' + diff_file) or file_path_normalized.endswith(diff_file):
+            matched_file = diff_file
+            break
+        # diff 文件路径是 file_path 的后缀
+        if diff_file.endswith(file_path_normalized.split('/')[-1]):
+            # 进一步检查路径是否匹配
+            diff_parts = diff_file.split('/')
+            path_parts = file_path_normalized.split('/')
+            # 从后往前匹配
+            match_count = 0
+            for i in range(1, min(len(diff_parts), len(path_parts)) + 1):
+                if diff_parts[-i] == path_parts[-i]:
+                    match_count += 1
+                else:
+                    break
+            if match_count >= 1:  # 至少文件名匹配
+                matched_file = diff_file
+                break
+    
+    if not matched_file:
+        return ""
+    
+    hunks = file_hunks[matched_file]
+    if not hunks:
+        return ""
+    
+    # 找到与行号范围相关的 hunk
+    relevant_hunks = []
+    for hunk in hunks:
+        hunk_new_start = hunk['new_start']
+        hunk_new_end = hunk_new_start + hunk['new_count'] - 1
+        
+        # 检查是否有重叠
+        if start_line <= 0:
+            # 如果没有指定行号，返回第一个 hunk
+            relevant_hunks.append(hunk)
+            break
+        elif not (end_line < hunk_new_start or start_line > hunk_new_end):
+            relevant_hunks.append(hunk)
+    
+    # 如果没有找到相关 hunk，返回第一个 hunk 作为参考
+    if not relevant_hunks and hunks:
+        relevant_hunks = [hunks[0]]
+    
+    # 生成 HTML，包含行号范围提示
+    html = f'<div class="diff-file" data-file="{matched_file}">\n'
+    html += f'<div class="diff-file-header">'
+    html += f'<span class="diff-file-name">{matched_file}</span>'
+    if start_line > 0:
+        html += f'<span class="diff-line-range-badge">行 {start_line}-{end_line}</span>'
+    html += '</div>\n'
+    
+    for hunk in relevant_hunks:
+        # 传递高亮行号范围
+        html += format_diff_hunk_html(hunk, matched_file, start_line, end_line)
+    
+    html += '</div>\n'
+    
+    return html
+
+
+def get_diff_for_file(file_path: str, file_hunks: Dict[str, List[dict]]) -> str:
+    """
+    获取指定文件的完整 diff HTML
+    
+    Args:
+        file_path: 文件路径
+        file_hunks: 已解析的 diff hunks
+    
+    Returns:
+        HTML 格式的 diff，如果无法匹配则返回空字符串
+    """
+    if not file_path or not file_hunks:
+        return ""
+    
+    # 尝试匹配文件路径
+    file_path_normalized = file_path.replace('\\', '/')
+    matched_file = None
+    
+    for diff_file in file_hunks.keys():
+        # 完全匹配
+        if diff_file == file_path_normalized:
+            matched_file = diff_file
+            break
+        # 文件名匹配
+        if file_path_normalized.endswith('/' + diff_file) or file_path_normalized.endswith(diff_file):
+            matched_file = diff_file
+            break
+        # diff 文件路径匹配 file_path 的后缀
+        file_name = file_path_normalized.split('/')[-1]
+        if diff_file.endswith(file_name):
+            # 进一步检查路径
+            diff_parts = diff_file.split('/')
+            path_parts = file_path_normalized.split('/')
+            match_count = 0
+            for i in range(1, min(len(diff_parts), len(path_parts)) + 1):
+                if diff_parts[-i] == path_parts[-i]:
+                    match_count += 1
+                else:
+                    break
+            if match_count >= 1:
+                matched_file = diff_file
+                break
+    
+    if not matched_file:
+        return ""
+    
+    hunks = file_hunks[matched_file]
+    if not hunks:
+        return ""
+    
+    # 生成 HTML
+    html = f'<div class="diff-file" data-file="{matched_file}">\n'
+    html += f'<div class="diff-file-header">{matched_file}</div>\n'
+    
+    for hunk in hunks:
+        html += format_diff_hunk_html(hunk, matched_file)
+    
+    html += '</div>\n'
+    
+    return html
+
+
 def detect_report_type(data: Dict[str, Any]) -> str:
     """自动检测报告类型"""
     if 'findings' in data and 'overall_correctness' in data:
@@ -191,6 +546,185 @@ def generate_html_header(title: str) -> str:
             font-family: 'Monaco', 'Menlo', 'Courier New', monospace;
             font-size: 13px;
             margin: 10px 0;
+        }}
+
+        /* GitHub/GitLab 风格 Diff 样式 */
+        .diff-file {{
+            border: 1px solid #d0d7de;
+            border-radius: 6px;
+            margin: 12px 0;
+            overflow: hidden;
+            background: #ffffff;
+        }}
+
+        .diff-file-header {{
+            background: #f6f8fa;
+            border-bottom: 1px solid #d0d7de;
+            padding: 10px 16px;
+            font-family: 'Monaco', 'Menlo', 'Consolas', 'Courier New', monospace;
+            font-size: 12px;
+            color: #24292f;
+            font-weight: 600;
+        }}
+
+        .diff-hunk {{
+            border-top: 1px solid #d0d7de;
+        }}
+
+        .diff-hunk:first-child {{
+            border-top: none;
+        }}
+
+        .diff-hunk-header {{
+            background: #f1f8ff;
+            color: #57606a;
+            padding: 8px 16px;
+            font-family: 'Monaco', 'Menlo', 'Consolas', 'Courier New', monospace;
+            font-size: 12px;
+            border-bottom: 1px solid #d0d7de;
+        }}
+
+        .diff-table {{
+            width: 100%;
+            border-collapse: collapse;
+            font-family: 'Monaco', 'Menlo', 'Consolas', 'Courier New', monospace;
+            font-size: 12px;
+            line-height: 20px;
+        }}
+
+        .diff-table tr {{
+            border: none;
+        }}
+
+        /* 新增行 - 绿色背景 */
+        .diff-line-add {{
+            background-color: #e6ffec;
+        }}
+
+        .diff-line-add .diff-line-num {{
+            background-color: #ccffd8;
+            color: #24292f;
+        }}
+
+        .diff-line-add .diff-line-prefix {{
+            color: #1a7f37;
+        }}
+
+        .diff-line-add .diff-line-content {{
+            background-color: #e6ffec;
+        }}
+
+        /* 删除行 - 红色背景 */
+        .diff-line-del {{
+            background-color: #ffebe9;
+        }}
+
+        .diff-line-del .diff-line-num {{
+            background-color: #ffd7d5;
+            color: #24292f;
+        }}
+
+        .diff-line-del .diff-line-prefix {{
+            color: #cf222e;
+        }}
+
+        .diff-line-del .diff-line-content {{
+            background-color: #ffebe9;
+        }}
+
+        /* 上下文行 */
+        .diff-line-ctx {{
+            background-color: #ffffff;
+        }}
+
+        .diff-line-ctx .diff-line-num {{
+            background-color: #f6f8fa;
+            color: #57606a;
+        }}
+
+        .diff-line-ctx .diff-line-prefix {{
+            color: #57606a;
+        }}
+
+        /* AI 评论标记的行号（红色） */
+        .diff-line-num-marked {{
+            background-color: #dc2626 !important;
+            color: #ffffff !important;
+            font-weight: bold;
+        }}
+
+        /* 文件头中的行号范围徽章 */
+        .diff-file-header {{
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            flex-wrap: wrap;
+            gap: 8px;
+        }}
+
+        .diff-file-name {{
+            font-family: 'Monaco', 'Menlo', 'Consolas', monospace;
+            font-size: 13px;
+            font-weight: 600;
+            color: #24292f;
+        }}
+
+        .diff-line-range-badge {{
+            background: #f59e0b;
+            color: white;
+            padding: 2px 8px;
+            border-radius: 10px;
+            font-size: 11px;
+            font-weight: bold;
+        }}
+
+        /* 行号列 */
+        .diff-line-num {{
+            width: 40px;
+            min-width: 40px;
+            padding: 0 8px;
+            text-align: right;
+            user-select: none;
+            vertical-align: top;
+            color: #57606a;
+            border-right: 1px solid #d0d7de;
+        }}
+
+        .diff-line-num-old {{
+            border-right: none;
+        }}
+
+        .diff-line-num-new {{
+            border-right: 1px solid #d0d7de;
+        }}
+
+        /* 前缀列 (+/-/空格) */
+        .diff-line-prefix {{
+            width: 20px;
+            min-width: 20px;
+            padding: 0 4px;
+            text-align: center;
+            user-select: none;
+            font-weight: bold;
+        }}
+
+        /* 代码内容列 */
+        .diff-line-content {{
+            padding: 0 16px 0 8px;
+            white-space: pre;
+            overflow-x: auto;
+            color: #24292f;
+        }}
+
+        .diff-line-content pre {{
+            margin: 0;
+            padding: 0;
+            font-family: inherit;
+            font-size: inherit;
+            white-space: pre;
+            background: transparent;
+            color: inherit;
+            display: inline;
         }}
 
         ul {{
@@ -387,11 +921,21 @@ def get_priority_badge(priority: str) -> str:
     return f'<span class="badge {priority_map.get(priority, "badge-low")}">{priority.upper()}</span>'
 
 
-def generate_review_report(data: Dict[str, Any]) -> str:
-    """生成代码审查报告"""
+def generate_review_report(data: Dict[str, Any], diff_content: str = None) -> str:
+    """生成代码审查报告
+    
+    Args:
+        data: 审查结果数据
+        diff_content: git diff 输出内容，用于展示代码变更
+    """
     html = generate_html_header("代码审查报告")
 
     html += "<h1>📋 代码审查报告</h1>\n"
+    
+    # 预解析 diff（避免重复解析）
+    file_hunks = None
+    if diff_content:
+        file_hunks = parse_diff_to_file_hunks(diff_content)
 
     # 总体评估
     html += "<h2>总体评估</h2>\n"
@@ -434,8 +978,21 @@ def generate_review_report(data: Dict[str, Any]) -> str:
                 html += f'<strong>文件:</strong> {code_loc.get("absolute_file_path", "未知")}<br>\n'
                 line_range = code_loc.get('line_range', {})
                 if line_range:
-                    html += f'<strong>行号:</strong> {line_range.get("start", "?")} - {line_range.get("end", "?")}\n'
+                    # 处理 line_range 可能是数组或对象的情况
+                    if isinstance(line_range, list):
+                        start = line_range[0] if len(line_range) > 0 else "?"
+                        end = line_range[1] if len(line_range) > 1 else start
+                    else:
+                        start = line_range.get("start", "?")
+                        end = line_range.get("end", "?")
+                    html += f'<strong>行号:</strong> {start} - {end}\n'
                 html += '</div>\n'
+                
+                # 添加 diff 代码片段
+                if file_hunks:
+                    diff_snippet_html = get_diff_snippet_for_finding(code_loc, file_hunks=file_hunks)
+                    if diff_snippet_html:
+                        html += diff_snippet_html
 
             # 置信度
             conf = finding.get('confidence_score', 0)
@@ -446,11 +1003,21 @@ def generate_review_report(data: Dict[str, Any]) -> str:
     return html
 
 
-def generate_analyze_report(data: Dict[str, Any]) -> str:
-    """生成代码变更解析报告"""
+def generate_analyze_report(data: Dict[str, Any], diff_content: str = None) -> str:
+    """生成代码变更解析报告
+    
+    Args:
+        data: 变更解析数据
+        diff_content: git diff 输出内容，用于展示代码变更
+    """
     html = generate_html_header("代码变更解析报告")
 
     html += "<h1>🔍 代码变更解析报告</h1>\n"
+    
+    # 预解析 diff
+    file_hunks = None
+    if diff_content:
+        file_hunks = parse_diff_to_file_hunks(diff_content)
 
     # 变更总览
     summary = data.get('change_summary', {})
@@ -477,7 +1044,8 @@ def generate_analyze_report(data: Dict[str, Any]) -> str:
 
     for change in file_changes:
         html += '<div class="file-change">\n'
-        html += f'<div class="file-path">{change.get("file_path", "未知文件")}</div>\n'
+        file_path = change.get("file_path", "未知文件")
+        html += f'<div class="file-path">{file_path}</div>\n'
         html += f'<p><span class="badge badge-feature">{change.get("change_type", "unknown").upper()}</span></p>\n'
 
         lines_add = change.get('lines_added', 0)
@@ -494,6 +1062,13 @@ def generate_analyze_report(data: Dict[str, Any]) -> str:
             html += '</ul>\n'
 
         html += f'<p><strong>影响:</strong> {change.get("impact", "未说明")}</p>\n'
+        
+        # 添加该文件的 diff 展示
+        if file_hunks:
+            diff_html = get_diff_for_file(file_path, file_hunks)
+            if diff_html:
+                html += diff_html
+        
         html += '</div>\n'
 
     # 架构影响
@@ -535,11 +1110,21 @@ def generate_analyze_report(data: Dict[str, Any]) -> str:
     return html
 
 
-def generate_priority_report(data: Dict[str, Any]) -> str:
-    """生成 Review 优先级评估报告"""
+def generate_priority_report(data: Dict[str, Any], diff_content: str = None) -> str:
+    """生成 Review 优先级评估报告
+    
+    Args:
+        data: 优先级评估数据
+        diff_content: git diff 输出内容，用于展示代码变更
+    """
     html = generate_html_header("Review 优先级评估报告")
 
     html += "<h1>⭐ Review 优先级评估报告</h1>\n"
+    
+    # 预解析 diff
+    file_hunks = None
+    if diff_content:
+        file_hunks = parse_diff_to_file_hunks(diff_content)
 
     # Review 总览
     summary = data.get('review_summary', {})
@@ -583,12 +1168,20 @@ def generate_priority_report(data: Dict[str, Any]) -> str:
     for idx, area in enumerate(priority_areas, 1):
         priority = area.get('priority', 'medium')
         html += f'<div class="priority-area priority-{priority}">\n'
-        html += f'<h3>{idx}. {area.get("file_path", "未知文件")}</h3>\n'
+        file_path = area.get("file_path", "未知文件")
+        html += f'<h3>{idx}. {file_path}</h3>\n'
         html += f'<p>{get_priority_badge(priority)} '
 
         line_range = area.get('line_range', {})
         if line_range:
-            html += f'<span class="code-location">行 {line_range.get("start", "?")} - {line_range.get("end", "?")}</span>'
+            # 处理 line_range 可能是数组或对象的情况
+            if isinstance(line_range, list):
+                start = line_range[0] if len(line_range) > 0 else "?"
+                end = line_range[1] if len(line_range) > 1 else start
+            else:
+                start = line_range.get("start", "?")
+                end = line_range.get("end", "?")
+            html += f'<span class="code-location">行 {start} - {end}</span>'
         html += '</p>\n'
 
         html += f'<p><strong>原因:</strong> {area.get("reason", "未说明")}</p>\n'
@@ -609,6 +1202,17 @@ def generate_priority_report(data: Dict[str, Any]) -> str:
             for rf in risk_factors:
                 html += f'<li>{rf}</li>\n'
             html += '</ul>\n'
+        
+        # 添加 diff 代码片段
+        if file_hunks:
+            # 构造 code_location 格式
+            code_loc = {
+                'absolute_file_path': file_path,
+                'line_range': line_range
+            }
+            diff_snippet_html = get_diff_snippet_for_finding(code_loc, file_hunks=file_hunks)
+            if diff_snippet_html:
+                html += diff_snippet_html
 
         html += '</div>\n'
 
@@ -887,6 +1491,185 @@ def generate_combined_html_header(title: str) -> str:
             margin: 10px 0;
         }}
 
+        /* GitHub/GitLab 风格 Diff 样式 */
+        .diff-file {{
+            border: 1px solid #d0d7de;
+            border-radius: 6px;
+            margin: 12px 0;
+            overflow: hidden;
+            background: #ffffff;
+        }}
+
+        .diff-file-header {{
+            background: #f6f8fa;
+            border-bottom: 1px solid #d0d7de;
+            padding: 10px 16px;
+            font-family: 'Monaco', 'Menlo', 'Consolas', 'Courier New', monospace;
+            font-size: 12px;
+            color: #24292f;
+            font-weight: 600;
+        }}
+
+        .diff-hunk {{
+            border-top: 1px solid #d0d7de;
+        }}
+
+        .diff-hunk:first-child {{
+            border-top: none;
+        }}
+
+        .diff-hunk-header {{
+            background: #f1f8ff;
+            color: #57606a;
+            padding: 8px 16px;
+            font-family: 'Monaco', 'Menlo', 'Consolas', 'Courier New', monospace;
+            font-size: 12px;
+            border-bottom: 1px solid #d0d7de;
+        }}
+
+        .diff-table {{
+            width: 100%;
+            border-collapse: collapse;
+            font-family: 'Monaco', 'Menlo', 'Consolas', 'Courier New', monospace;
+            font-size: 12px;
+            line-height: 20px;
+        }}
+
+        .diff-table tr {{
+            border: none;
+        }}
+
+        /* 新增行 - 绿色背景 */
+        .diff-line-add {{
+            background-color: #e6ffec;
+        }}
+
+        .diff-line-add .diff-line-num {{
+            background-color: #ccffd8;
+            color: #24292f;
+        }}
+
+        .diff-line-add .diff-line-prefix {{
+            color: #1a7f37;
+        }}
+
+        .diff-line-add .diff-line-content {{
+            background-color: #e6ffec;
+        }}
+
+        /* 删除行 - 红色背景 */
+        .diff-line-del {{
+            background-color: #ffebe9;
+        }}
+
+        .diff-line-del .diff-line-num {{
+            background-color: #ffd7d5;
+            color: #24292f;
+        }}
+
+        .diff-line-del .diff-line-prefix {{
+            color: #cf222e;
+        }}
+
+        .diff-line-del .diff-line-content {{
+            background-color: #ffebe9;
+        }}
+
+        /* 上下文行 */
+        .diff-line-ctx {{
+            background-color: #ffffff;
+        }}
+
+        .diff-line-ctx .diff-line-num {{
+            background-color: #f6f8fa;
+            color: #57606a;
+        }}
+
+        .diff-line-ctx .diff-line-prefix {{
+            color: #57606a;
+        }}
+
+        /* AI 评论标记的行号（红色） */
+        .diff-line-num-marked {{
+            background-color: #dc2626 !important;
+            color: #ffffff !important;
+            font-weight: bold;
+        }}
+
+        /* 文件头中的行号范围徽章 */
+        .diff-file-header {{
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            flex-wrap: wrap;
+            gap: 8px;
+        }}
+
+        .diff-file-name {{
+            font-family: 'Monaco', 'Menlo', 'Consolas', monospace;
+            font-size: 13px;
+            font-weight: 600;
+            color: #24292f;
+        }}
+
+        .diff-line-range-badge {{
+            background: #f59e0b;
+            color: white;
+            padding: 2px 8px;
+            border-radius: 10px;
+            font-size: 11px;
+            font-weight: bold;
+        }}
+
+        /* 行号列 */
+        .diff-line-num {{
+            width: 40px;
+            min-width: 40px;
+            padding: 0 8px;
+            text-align: right;
+            user-select: none;
+            vertical-align: top;
+            color: #57606a;
+            border-right: 1px solid #d0d7de;
+        }}
+
+        .diff-line-num-old {{
+            border-right: none;
+        }}
+
+        .diff-line-num-new {{
+            border-right: 1px solid #d0d7de;
+        }}
+
+        /* 前缀列 (+/-/空格) */
+        .diff-line-prefix {{
+            width: 20px;
+            min-width: 20px;
+            padding: 0 4px;
+            text-align: center;
+            user-select: none;
+            font-weight: bold;
+        }}
+
+        /* 代码内容列 */
+        .diff-line-content {{
+            padding: 0 16px 0 8px;
+            white-space: pre;
+            overflow-x: auto;
+            color: #24292f;
+        }}
+
+        .diff-line-content pre {{
+            margin: 0;
+            padding: 0;
+            font-family: inherit;
+            font-size: inherit;
+            white-space: pre;
+            background: transparent;
+            color: inherit;
+            display: inline;
+        }}
+
         ul {{
             margin: 10px 0;
             padding-left: 25px;
@@ -1101,9 +1884,19 @@ def generate_combined_html_footer() -> str:
 """
 
 
-def generate_analyze_content(data: Dict[str, Any]) -> str:
-    """生成变更解析的内容（不含 HTML 头尾）"""
+def generate_analyze_content(data: Dict[str, Any], diff_content: str = None) -> str:
+    """生成变更解析的内容（不含 HTML 头尾）
+    
+    Args:
+        data: 变更解析数据
+        diff_content: git diff 输出内容，用于展示代码变更
+    """
     html = ""
+    
+    # 预解析 diff
+    file_hunks = None
+    if diff_content:
+        file_hunks = parse_diff_to_file_hunks(diff_content)
 
     # 变更总览
     summary = data.get('change_summary', {})
@@ -1130,7 +1923,8 @@ def generate_analyze_content(data: Dict[str, Any]) -> str:
 
     for change in file_changes:
         html += '<div class="file-change">\n'
-        html += f'<div class="file-path">{change.get("file_path", "未知文件")}</div>\n'
+        file_path = change.get("file_path", "未知文件")
+        html += f'<div class="file-path">{file_path}</div>\n'
         html += f'<p><span class="badge badge-feature">{change.get("change_type", "unknown").upper()}</span></p>\n'
 
         lines_add = change.get('lines_added', 0)
@@ -1147,6 +1941,13 @@ def generate_analyze_content(data: Dict[str, Any]) -> str:
             html += '</ul>\n'
 
         html += f'<p><strong>影响:</strong> {change.get("impact", "未说明")}</p>\n'
+        
+        # 添加该文件的 diff 展示
+        if file_hunks:
+            diff_html = get_diff_for_file(file_path, file_hunks)
+            if diff_html:
+                html += diff_html
+        
         html += '</div>\n'
 
     # 架构影响
@@ -1187,9 +1988,19 @@ def generate_analyze_content(data: Dict[str, Any]) -> str:
     return html
 
 
-def generate_priority_content(data: Dict[str, Any]) -> str:
-    """生成优先级评估的内容（不含 HTML 头尾）"""
+def generate_priority_content(data: Dict[str, Any], diff_content: str = None) -> str:
+    """生成优先级评估的内容（不含 HTML 头尾）
+    
+    Args:
+        data: 优先级评估数据
+        diff_content: git diff 输出内容，用于展示代码变更
+    """
     html = ""
+    
+    # 预解析 diff
+    file_hunks = None
+    if diff_content:
+        file_hunks = parse_diff_to_file_hunks(diff_content)
 
     # Review 总览
     summary = data.get('review_summary', {})
@@ -1233,12 +2044,20 @@ def generate_priority_content(data: Dict[str, Any]) -> str:
     for idx, area in enumerate(priority_areas, 1):
         priority = area.get('priority', 'medium')
         html += f'<div class="priority-area priority-{priority}">\n'
-        html += f'<h3>{idx}. {area.get("file_path", "未知文件")}</h3>\n'
+        file_path = area.get("file_path", "未知文件")
+        html += f'<h3>{idx}. {file_path}</h3>\n'
         html += f'<p>{get_priority_badge(priority)} '
 
         line_range = area.get('line_range', {})
         if line_range:
-            html += f'<span class="code-location">行 {line_range.get("start", "?")} - {line_range.get("end", "?")}</span>'
+            # 处理 line_range 可能是数组或对象的情况
+            if isinstance(line_range, list):
+                start = line_range[0] if len(line_range) > 0 else "?"
+                end = line_range[1] if len(line_range) > 1 else start
+            else:
+                start = line_range.get("start", "?")
+                end = line_range.get("end", "?")
+            html += f'<span class="code-location">行 {start} - {end}</span>'
         html += '</p>\n'
 
         html += f'<p><strong>原因:</strong> {area.get("reason", "未说明")}</p>\n'
@@ -1259,11 +2078,21 @@ def generate_priority_content(data: Dict[str, Any]) -> str:
             for rf in risk_factors:
                 html += f'<li>{rf}</li>\n'
             html += '</ul>\n'
+        
+        # 添加 diff 代码片段
+        if file_hunks:
+            code_loc = {
+                'absolute_file_path': file_path,
+                'line_range': line_range
+            }
+            diff_snippet_html = get_diff_snippet_for_finding(code_loc, file_hunks=file_hunks)
+            if diff_snippet_html:
+                html += diff_snippet_html
 
         html += '</div>\n'
 
     # Review 策略
-    strategy = data.get('review_strategy', )
+    strategy = data.get('review_strategy', {})
     if strategy:
         html += "<h2>Review 策略</h2>\n"
         html += '<div class="card">\n'
@@ -1320,9 +2149,19 @@ def generate_priority_content(data: Dict[str, Any]) -> str:
     return html
 
 
-def generate_review_content(data: Dict[str, Any]) -> str:
-    """生成代码审查的内容（不含 HTML 头尾）"""
+def generate_review_content(data: Dict[str, Any], diff_content: str = None) -> str:
+    """生成代码审查的内容（不含 HTML 头尾）
+    
+    Args:
+        data: 审查结果数据
+        diff_content: git diff 输出内容，用于展示代码变更
+    """
     html = ""
+    
+    # 预解析 diff（避免重复解析）
+    file_hunks = None
+    if diff_content:
+        file_hunks = parse_diff_to_file_hunks(diff_content)
 
     # 总体评估
     html += "<h2>总体评估</h2>\n"
@@ -1365,8 +2204,21 @@ def generate_review_content(data: Dict[str, Any]) -> str:
                 html += f'<strong>文件:</strong> {code_loc.get("absolute_file_path", "未知")}<br>\n'
                 line_range = code_loc.get('line_range', {})
                 if line_range:
-                    html += f'<strong>行号:</strong> {line_range.get("start", "?")} - {line_range.get("end", "?")}\n'
+                    # 处理 line_range 可能是数组或对象的情况
+                    if isinstance(line_range, list):
+                        start = line_range[0] if len(line_range) > 0 else "?"
+                        end = line_range[1] if len(line_range) > 1 else start
+                    else:
+                        start = line_range.get("start", "?")
+                        end = line_range.get("end", "?")
+                    html += f'<strong>行号:</strong> {start} - {end}\n'
                 html += '</div>\n'
+                
+                # 添加 diff 代码片段
+                if file_hunks:
+                    diff_snippet_html = get_diff_snippet_for_finding(code_loc, file_hunks=file_hunks)
+                    if diff_snippet_html:
+                        html += diff_snippet_html
 
             # 置信度
             conf = finding.get('confidence_score', 0)
@@ -1376,10 +2228,35 @@ def generate_review_content(data: Dict[str, Any]) -> str:
     return html
 
 
+def _ensure_dict(data: Any) -> Dict[str, Any]:
+    """
+    确保数据是字典类型，处理 AI 返回格式不一致的情况
+
+    Args:
+        data: 输入数据，可能是 dict、list 或其他类型
+
+    Returns:
+        字典类型的数据
+    """
+    if data is None:
+        return {}
+    if isinstance(data, dict):
+        return data
+    if isinstance(data, list):
+        # 如果是列表，尝试取第一个元素（如果是 dict）
+        if len(data) > 0 and isinstance(data[0], dict):
+            return data[0]
+        # 否则包装成 dict
+        return {'items': data}
+    # 其他类型，包装成 dict
+    return {'value': data}
+
+
 def generate_combined_report(
     analyze_data: Dict[str, Any] = None,
     priority_data: Dict[str, Any] = None,
-    review_data: Dict[str, Any] = None
+    review_data: Dict[str, Any] = None,
+    diff_content: str = None
 ) -> str:
     """
     生成合并的 HTML 报告（带 Tab 切换）
@@ -1388,16 +2265,22 @@ def generate_combined_report(
         analyze_data: 变更解析数据
         priority_data: 优先级评估数据
         review_data: 代码审查数据
+        diff_content: git diff 输出内容，用于展示代码变更
 
     Returns:
         合并的 HTML 报告
     """
     html = generate_combined_html_header("Code Review 综合报告")
 
+    # 确保数据是字典类型
+    review_data = _ensure_dict(review_data)
+    analyze_data = _ensure_dict(analyze_data)
+    priority_data = _ensure_dict(priority_data)
+
     # 代码审查 Tab（默认显示）
     html += '<div id="tab-review" class="tab-content active">\n'
     if review_data:
-        html += generate_review_content(review_data)
+        html += generate_review_content(review_data, diff_content)
     else:
         html += '<div class="card"><p>暂无代码审查数据</p></div>\n'
     html += '</div>\n'
@@ -1405,7 +2288,7 @@ def generate_combined_report(
     # 变更解析 Tab
     html += '<div id="tab-analyze" class="tab-content">\n'
     if analyze_data:
-        html += generate_analyze_content(analyze_data)
+        html += generate_analyze_content(analyze_data, diff_content)
     else:
         html += '<div class="card"><p>暂无变更解析数据</p></div>\n'
     html += '</div>\n'
@@ -1413,7 +2296,7 @@ def generate_combined_report(
     # 优先级评估 Tab
     html += '<div id="tab-priority" class="tab-content">\n'
     if priority_data:
-        html += generate_priority_content(priority_data)
+        html += generate_priority_content(priority_data, diff_content)
     else:
         html += '<div class="card"><p>暂无优先级评估数据</p></div>\n'
     html += '</div>\n'

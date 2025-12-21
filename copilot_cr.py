@@ -156,13 +156,14 @@ def run_copilot_with_prompt(
     return raw_output
 
 
-def generate_html_report(json_file: Path, mode: str) -> Path:
+def generate_html_report(json_file: Path, mode: str, diff_content: str = None) -> Path:
     """
     根据 JSON 结果生成 HTML 报告（复用 generate_report 模块）
 
     Args:
         json_file: JSON 结果文件路径
         mode: 模式（review/analyze/priority）
+        diff_content: git diff 输出内容，用于展示代码变更
 
     Returns:
         生成的 HTML 文件路径
@@ -171,7 +172,7 @@ def generate_html_report(json_file: Path, mode: str) -> Path:
         data = load_json_file(str(json_file))
 
         if mode == 'review':
-            html = generate_review_report(data)
+            html = generate_review_report(data, diff_content)
         elif mode == 'analyze':
             html = generate_analyze_report(data)
         elif mode == 'priority':
@@ -199,6 +200,51 @@ def thread_safe_print(*args, **kwargs):
     """线程安全的打印函数"""
     with print_lock:
         print(*args, **kwargs)
+
+
+def extract_agent_response(raw_output: str) -> str:
+    """
+    从 Copilot 输出中提取 agent 响应，去除统计信息。
+    
+    Copilot 的输出格式通常是：
+    1. Agent 响应内容
+    2. 空行
+    3. 统计信息（Total usage est, Total duration 等）
+    
+    Args:
+        raw_output: Copilot 的原始输出
+        
+    Returns:
+        提取的 agent 响应内容
+    """
+    if not raw_output:
+        return raw_output
+    
+    lines = raw_output.split('\n')
+    result_lines = []
+    
+    # 从后往前找统计信息的开始位置
+    stats_start = len(lines)
+    for i in range(len(lines) - 1, -1, -1):
+        line = lines[i].strip()
+        if line.startswith('Total usage est:') or line.startswith('Total duration'):
+            # 找到统计信息，继续往前找空行
+            for j in range(i - 1, -1, -1):
+                if lines[j].strip() == '':
+                    stats_start = j
+                    break
+            else:
+                stats_start = i
+            break
+    
+    # 提取 agent 响应部分
+    result_lines = lines[:stats_start]
+    
+    # 去除末尾的空行
+    while result_lines and result_lines[-1].strip() == '':
+        result_lines.pop()
+    
+    return '\n'.join(result_lines)
 
 
 def save_meta_info(
@@ -238,10 +284,15 @@ def run_single_mode_analysis(
     output_dir: Path,
     repo_root: Path,
     result_filename: str,
-    model: str = None
+    model: str = None,
+    diff_content: str = None
 ) -> Tuple[str, str, bool, str]:
     """
     运行单个模式的分析（用于并行执行）
+
+    使用 Popen 实时读取输出，显示进度信息。
+    注意：Copilot CLI 不支持像 Claude/Codex 那样的结构化事件流，
+    但可以通过实时读取 stdout/stderr 来显示进度。
 
     Args:
         mode: 模式（review/analyze/priority）
@@ -250,53 +301,146 @@ def run_single_mode_analysis(
         repo_root: 仓库根目录
         result_filename: 结果文件名
         model: 指定使用的模型
+        diff_content: git diff 输出内容，用于生成报告时展示代码变更
 
     Returns:
         (mode, result_filename, success, result_or_error)
     """
+    import time
+    import select
+    import sys
+    
     try:
-        thread_safe_print(f"\n[{mode}] 开始分析...")
+        start_time = time.time()
+        thread_safe_print(f"[{mode}] 开始分析...")
 
-        # 调用 Copilot
-        raw_output = run_copilot_with_prompt(
-            prompt, repo_root, output_dir, mode,
-            model=model
+        # 检查 copilot 命令是否存在
+        check_result = subprocess.run(['which', 'copilot'], capture_output=True)
+        if check_result.returncode != 0:
+            raise Exception(
+                "未找到 copilot 命令，请确保已安装 GitHub Copilot CLI。\n"
+                "安装方法: 在 VS Code 中安装 GitHub Copilot Chat 扩展"
+            )
+
+        # 构建 copilot 命令 - 不使用 -s，以便获取进度信息
+        # 使用 -p 传入 prompt，--allow-all-tools 允许自动执行工具
+        cmd = ['copilot', '-p', prompt, '--allow-all-tools']
+
+        # 添加模型参数
+        if model:
+            actual_model = COPILOT_MODELS.get(model, model)
+            cmd.extend(['--model', actual_model])
+            thread_safe_print(f"[{mode}] 使用模型: {actual_model}")
+
+        # 启动进程，实时读取输出
+        process = subprocess.Popen(
+            cmd,
+            cwd=str(repo_root),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True
         )
 
+        # 实时读取输出
+        stdout_lines = []
+        stderr_lines = []
+        last_progress_time = time.time()
+        
+        # 使用 select 实现非阻塞读取（仅 Unix）
+        import threading
+        
+        def read_stderr():
+            """后台线程读取 stderr"""
+            for line in process.stderr:
+                stderr_lines.append(line)
+                # 解析并输出有意义的进度信息
+                line_stripped = line.strip()
+                if line_stripped:
+                    # 输出统计信息行
+                    if any(keyword in line_stripped for keyword in [
+                        'Total usage', 'Total duration', 'Usage by model',
+                        'code changes', 'Premium request'
+                    ]):
+                        thread_safe_print(f"[{mode}] {line_stripped}")
+        
+        # 启动 stderr 读取线程
+        stderr_thread = threading.Thread(target=read_stderr, daemon=True)
+        stderr_thread.start()
+        
+        # 主线程读取 stdout，同时定期输出进度提示
+        progress_interval = 15  # 每 15 秒输出一次进度提示
+        
+        for line in process.stdout:
+            stdout_lines.append(line)
+            current_time = time.time()
+            
+            # 定期输出进度提示，让用户知道程序还在运行
+            if current_time - last_progress_time > progress_interval:
+                elapsed = int(current_time - start_time)
+                thread_safe_print(f"[{mode}] 仍在处理中... (已运行 {elapsed}s)")
+                last_progress_time = current_time
+
+        # 等待进程结束
+        process.wait()
+        stderr_thread.join(timeout=5)
+        
+        elapsed_time = int(time.time() - start_time)
+
+        if process.returncode != 0:
+            stderr_output = ''.join(stderr_lines)
+            raise Exception(f"copilot 执行失败，退出码: {process.returncode}\n{stderr_output}")
+
+        # 合并 stdout 输出
+        raw_output = ''.join(stdout_lines)
+        
+        # 从输出中提取 agent 响应（去除统计信息）
+        # Copilot 的输出格式：先是 agent 响应，然后是空行，最后是统计信息
+        agent_response = extract_agent_response(raw_output)
+
+        # 保存原始输出
+        if output_dir:
+            raw_output_file = output_dir / 'raw_output.txt'
+            with open(raw_output_file, 'a', encoding='utf-8') as f:
+                f.write(f"\n\n{'='*50}\n")
+                f.write(f"Mode: {mode}\n")
+                f.write(f"Duration: {elapsed_time}s\n")
+                f.write(f"{'='*50}\n\n")
+                f.write(raw_output)
+                if stderr_lines:
+                    f.write(f"\n\n--- stderr ---\n")
+                    f.write(''.join(stderr_lines))
+
         # 提取 JSON
-        json_data = extract_json_from_text(raw_output, mode)
+        json_data = extract_json_from_text(agent_response, mode)
 
         if json_data is None:
             thread_safe_print(f"[{mode}] 警告: 无法从输出中提取有效的 JSON")
             if mode == "review":
                 fallback = create_fallback_review("无法提取 JSON")
-                result = format_json(fallback)
+                result_str = format_json(fallback)
             else:
-                result = raw_output
+                # 对于 analyze 和 priority 模式，也创建一个空的 fallback
+                result_str = format_json({})
         elif mode == "review" and not validate_review_schema(json_data):
             thread_safe_print(f"[{mode}] 警告: 输出不符合预期的 schema")
             fallback = create_fallback_review("Schema 验证失败")
-            result = format_json(fallback)
+            result_str = format_json(fallback)
         else:
-            thread_safe_print(f"[{mode}] ✓ 输出格式验证通过")
-            result = format_json(json_data)
+            result_str = format_json(json_data)
 
         # 保存结果
         result_file = output_dir / result_filename
         with open(result_file, 'w', encoding='utf-8') as f:
-            f.write(result)
-        thread_safe_print(f"[{mode}] ✓ JSON 结果已保存到: {result_file}")
+            f.write(result_str)
 
         # 生成 HTML 报告
-        html_file = generate_html_report(result_file, mode)
-        if html_file:
-            thread_safe_print(f"[{mode}] ✓ HTML 报告已生成: {html_file}")
+        generate_html_report(result_file, mode, diff_content)
 
-        thread_safe_print(f"[{mode}] ✓ 分析完成")
-        return (mode, result_filename, True, result)
+        thread_safe_print(f"[{mode}] ✓ 完成 (耗时 {elapsed_time}s)")
+        return (mode, result_filename, True, result_str)
 
     except Exception as e:
-        thread_safe_print(f"[{mode}] ✗ 分析失败: {e}")
+        thread_safe_print(f"[{mode}] ✗ 失败: {e}")
         return (mode, result_filename, False, str(e))
 
 
@@ -456,13 +600,16 @@ def main():
 
             results = {}
 
+            # 提取 diff 内容用于报告展示
+            diff_content = diff[0] if diff else None
+
             if len(modes_to_run) == 1:
                 # 单模式：串行执行
                 mode = modes_to_run[0]
                 config = mode_configs[mode]
                 mode_result = run_single_mode_analysis(
                     mode, config['prompt'], output_dir, repo_root, config['result_filename'],
-                    model=args.model
+                    model=args.model, diff_content=diff_content
                 )
                 results[mode] = mode_result
             else:
@@ -474,7 +621,7 @@ def main():
                         future = executor.submit(
                             run_single_mode_analysis,
                             mode, config['prompt'], output_dir, repo_root, config['result_filename'],
-                            args.model
+                            args.model, diff_content
                         )
                         futures[future] = mode
 
@@ -534,7 +681,7 @@ def main():
                         pass
 
                 # 生成合并报告
-                combined_html = generate_combined_report(analyze_data, priority_data, review_data)
+                combined_html = generate_combined_report(analyze_data, priority_data, review_data, diff_content)
                 combined_file = output_dir / 'report.html'
                 with open(combined_file, 'w', encoding='utf-8') as f:
                     f.write(combined_html)

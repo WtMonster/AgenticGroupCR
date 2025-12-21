@@ -105,6 +105,7 @@ ${GREEN}Codex Code Review Tool${NC}
   -M, --model MODEL           指定 Codex 模型(如 o3, gpt-4o, gpt-5.1-codex-max)
   -p, --profile PROFILE       使用预定义的 Codex Profile(如 o3)
   -r, --reasoning-effort LVL  推理努力程度: minimal, low, medium, high, xhigh
+  --sequential                串行执行所有模式（默认 all 模式下并行执行）
   --prompt-only               只生成 prompt,不调用 Codex
   --no-context                禁用仓库上下文访问
   -h, --help                  显示此帮助信息
@@ -135,6 +136,7 @@ parse_args() {
     REASONING_EFFORT=""
     PROMPT_ONLY=false
     NO_CONTEXT=false
+    SEQUENTIAL=false
 
     while [[ $# -gt 0 ]]; do
         case $1 in
@@ -176,6 +178,10 @@ parse_args() {
                 ;;
             --no-context)
                 NO_CONTEXT=true
+                shift
+                ;;
+            --sequential)
+                SEQUENTIAL=true
                 shift
                 ;;
             -h|--help)
@@ -227,6 +233,10 @@ run_python_version() {
 
     if [[ "$NO_CONTEXT" == true ]]; then
         cmd="$cmd --no-context"
+    fi
+
+    if [[ "$SEQUENTIAL" == true ]]; then
+        cmd="$cmd --sequential"
     fi
 
     print_info "执行命令: $cmd"

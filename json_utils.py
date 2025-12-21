@@ -77,74 +77,64 @@ def extract_json_from_text(text: str, mode: str = None) -> Optional[Dict[str, An
         'priority': ['review_summary', 'priority_areas']
     }
 
+    def matches_mode(parsed: dict, target_mode: str) -> bool:
+        """检查解析的 JSON 是否匹配指定模式"""
+        if target_mode not in mode_signatures:
+            return True
+        sig_fields = mode_signatures[target_mode]
+        return all(field in parsed for field in sig_fields)
+
     # 尝试直接解析整个文本
     try:
-        return json.loads(text)
+        parsed = json.loads(text)
+        if mode is None or matches_mode(parsed, mode):
+            return parsed
     except json.JSONDecodeError:
         pass
 
     # 尝试查找 JSON 代码块（```json ... ```）
+    # 如果指定了 mode，需要找到匹配的代码块
     json_block_pattern = r'```json\s*\n?(.*?)\n?```'
     matches = re.findall(json_block_pattern, text, re.DOTALL)
-    if matches:
+    for match in matches:
         try:
-            parsed = json.loads(matches[0])
-            return parsed
-        except json.JSONDecodeError:
-            pass
-
-    # 尝试提取第一个完整的 JSON 对象（处理重复 JSON 的情况）
-    first_json_str = extract_first_json_object(text)
-    if first_json_str:
-        try:
-            parsed = json.loads(first_json_str)
-            # 如果指定了模式，验证是否匹配
-            if mode and mode in mode_signatures:
-                sig_fields = mode_signatures[mode]
-                if all(field in parsed for field in sig_fields):
-                    return parsed
-            else:
-                # 未指定模式，检查是否匹配任意已知模式
-                for sig_fields in mode_signatures.values():
-                    if all(field in parsed for field in sig_fields):
-                        return parsed
-                # 如果不匹配任何已知模式，仍然返回（可能是其他格式）
+            parsed = json.loads(match)
+            if mode is None or matches_mode(parsed, mode):
                 return parsed
         except json.JSONDecodeError:
-            pass
+            continue
 
-    # 如果指定了模式，尝试查找特定模式的 JSON
+    # 如果指定了模式，优先查找特定模式的 JSON
     if mode and mode in mode_signatures:
         sig_fields = mode_signatures[mode]
         first_field = sig_fields[0]
 
-        # 查找以特定字段开头的 JSON
-        for pattern in [f'{{"{first_field}"', f'{{ "{first_field}"']:
-            start_pos = text.find(pattern)
-            if start_pos != -1:
-                json_str = extract_first_json_object(text[start_pos:])
-                if json_str:
-                    try:
-                        parsed = json.loads(json_str)
-                        if all(field in parsed for field in sig_fields):
-                            return parsed
-                    except json.JSONDecodeError:
-                        pass
+        # 查找以特定字段开头的 JSON（可能有多个，需要遍历）
+        search_start = 0
+        while True:
+            # 查找下一个可能的起始位置
+            pos1 = text.find(f'"{first_field}"', search_start)
+            if pos1 == -1:
+                break
+            
+            # 向前找到 JSON 对象的开始 {
+            brace_start = text.rfind('{', search_start, pos1)
+            if brace_start == -1:
+                search_start = pos1 + 1
+                continue
+            
+            json_str = extract_first_json_object(text[brace_start:])
+            if json_str:
+                try:
+                    parsed = json.loads(json_str)
+                    if matches_mode(parsed, mode):
+                        return parsed
+                except json.JSONDecodeError:
+                    pass
+            
+            search_start = pos1 + 1
 
-    # 优先查找包含 "findings" 的 JSON 对象（review 模式）
-    findings_start = text.find('{"findings"')
-    if findings_start == -1:
-        findings_start = text.find('{ "findings"')
-
-    if findings_start != -1:
-        json_str = extract_first_json_object(text[findings_start:])
-        if json_str:
-            try:
-                return json.loads(json_str)
-            except json.JSONDecodeError:
-                pass
-
-    # 最后尝试查找任意完整的 JSON 对象
+    # 尝试提取所有完整的 JSON 对象，找到匹配的
     brace_count = 0
     start_idx = -1
 
@@ -159,13 +149,20 @@ def extract_json_from_text(text: str, mode: str = None) -> Optional[Dict[str, An
                 try:
                     json_str = text[start_idx:i+1]
                     parsed = json.loads(json_str)
-                    # 验证是否是我们期望的结果格式
-                    for sig_fields in mode_signatures.values():
-                        if all(field in parsed for field in sig_fields):
+                    
+                    # 如果指定了模式，检查是否匹配
+                    if mode:
+                        if matches_mode(parsed, mode):
                             return parsed
-                    # 如果不匹配任何已知模式但是有效 JSON，也返回
-                    if isinstance(parsed, dict):
-                        return parsed
+                        # 不匹配，继续查找下一个
+                    else:
+                        # 未指定模式，检查是否匹配任意已知模式
+                        for sig_fields in mode_signatures.values():
+                            if all(field in parsed for field in sig_fields):
+                                return parsed
+                        # 如果不匹配任何已知模式但是有效 JSON，也返回
+                        if isinstance(parsed, dict):
+                            return parsed
                 except json.JSONDecodeError:
                     pass
                 # 重置，继续查找下一个

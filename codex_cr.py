@@ -12,6 +12,7 @@ import sys
 import subprocess
 import argparse
 import threading
+import json
 from pathlib import Path
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -189,13 +190,14 @@ def run_codex_analysis(
     return format_json(json_data)
 
 
-def generate_html_report(json_file: Path, mode: str) -> Path:
+def generate_html_report(json_file: Path, mode: str, diff_content: str = None) -> Path:
     """
     根据 JSON 结果生成 HTML 报告（复用 generate_report 模块）
 
     Args:
         json_file: JSON 结果文件路径
         mode: 模式（review/analyze/priority）
+        diff_content: git diff 输出内容，用于展示代码变更
 
     Returns:
         生成的 HTML 文件路径
@@ -204,7 +206,7 @@ def generate_html_report(json_file: Path, mode: str) -> Path:
         data = load_json_file(str(json_file))
 
         if mode == 'review':
-            html = generate_review_report(data)
+            html = generate_review_report(data, diff_content)
         elif mode == 'analyze':
             html = generate_analyze_report(data)
         elif mode == 'priority':
@@ -232,6 +234,67 @@ def thread_safe_print(*args, **kwargs):
     """线程安全的打印函数"""
     with print_lock:
         print(*args, **kwargs)
+
+
+def format_codex_command(command: str) -> str:
+    """
+    格式化 Codex 命令显示，提取关键信息
+
+    Args:
+        command: 完整的 shell 命令
+
+    Returns:
+        格式化的命令描述
+    """
+    import re
+
+    # 移除 shell 前缀 (如 /bin/zsh -lc)
+    cmd = re.sub(r'^/bin/\w+\s+-\w+\s+', '', command)
+
+    # 识别常见命令并格式化
+    if cmd.startswith('cat '):
+        # cat 文件
+        filename = cmd[4:].strip().split('/')[-1]
+        return f"Read: {filename}"
+
+    elif cmd.startswith('ls '):
+        # ls 目录
+        path = cmd[3:].strip()
+        return f"List: {path}"
+
+    elif cmd.startswith('grep ') or cmd.startswith('rg '):
+        # grep/rg 搜索
+        parts = cmd.split()
+        pattern = None
+        for i, p in enumerate(parts):
+            if not p.startswith('-') and i > 0:
+                pattern = p
+                break
+        if pattern:
+            if len(pattern) > 30:
+                pattern = pattern[:30] + '...'
+            return f"Search: '{pattern}'"
+        return f"Search: {cmd[:40]}..."
+
+    elif cmd.startswith('find '):
+        # find 查找
+        return f"Find: {cmd[5:50]}..." if len(cmd) > 55 else f"Find: {cmd[5:]}"
+
+    elif cmd.startswith('head ') or cmd.startswith('tail '):
+        # head/tail 文件
+        parts = cmd.split()
+        filename = parts[-1].split('/')[-1] if parts else 'unknown'
+        return f"{parts[0].capitalize()}: {filename}"
+
+    elif cmd.startswith('wc '):
+        # wc 统计
+        return f"Count: {cmd[3:]}"
+
+    else:
+        # 其他命令，截断显示
+        if len(cmd) > 60:
+            cmd = cmd[:60] + '...'
+        return f"Exec: {cmd}"
 
 
 def save_meta_info(
@@ -278,10 +341,13 @@ def run_single_mode_analysis(
     result_filename: str,
     model: str = None,
     profile: str = None,
-    reasoning_effort: str = None
+    reasoning_effort: str = None,
+    diff_content: str = None
 ) -> Tuple[str, str, bool, str]:
     """
     运行单个模式的分析（用于并行执行）
+
+    使用 --json 参数获取 JSONL 事件流，实时输出工具调用信息
 
     Args:
         mode: 模式（review/analyze/priority）
@@ -292,18 +358,76 @@ def run_single_mode_analysis(
         model: 指定使用的模型
         profile: 使用预定义的 Codex Profile
         reasoning_effort: 模型推理努力程度
+        diff_content: git diff 输出内容，用于生成报告时展示代码变更
 
     Returns:
         (mode, result_filename, success, result_or_error)
     """
     try:
-        thread_safe_print(f"\n[{mode}] 开始分析...")
+        thread_safe_print(f"[{mode}] 分析中...")
 
-        # 调用 Codex
-        raw_output = run_codex_with_prompt(
-            prompt, repo_root, output_dir, mode,
-            model=model, profile=profile, reasoning_effort=reasoning_effort
+        # 构建 codex exec 命令 - 使用 --json 获取事件流
+        cmd = ['codex', 'exec', '--full-auto', '--json']
+
+        # 添加模型相关参数
+        if profile:
+            cmd.extend(['--profile', profile])
+        if model:
+            cmd.extend(['--model', model])
+        if reasoning_effort:
+            cmd.extend(['-c', f'model_reasoning_effort={reasoning_effort}'])
+
+        # 添加 stdin 输入标记
+        cmd.append('-')
+
+        # 启动进程
+        process = subprocess.Popen(
+            cmd,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            cwd=str(repo_root)
         )
+
+        # 发送 prompt 并关闭 stdin
+        process.stdin.write(prompt)
+        process.stdin.close()
+
+        # 实时读取输出并解析工具调用
+        final_message = None
+        raw_output_lines = []
+
+        for line in process.stdout:
+            raw_output_lines.append(line)
+            try:
+                event = json.loads(line.strip())
+                event_type = event.get('type')
+
+                # 解析工具调用事件
+                if event_type == 'item.started':
+                    item = event.get('item', {})
+                    if item.get('type') == 'command_execution':
+                        command = item.get('command', 'unknown')
+                        # 格式化命令显示
+                        detail = format_codex_command(command)
+                        thread_safe_print(f"[{mode}] {detail}")
+
+                # 获取最终消息
+                elif event_type == 'item.completed':
+                    item = event.get('item', {})
+                    if item.get('type') == 'agent_message':
+                        final_message = item.get('text', '')
+
+            except json.JSONDecodeError:
+                pass
+
+        # 等待进程结束
+        process.wait()
+
+        if process.returncode != 0:
+            stderr = process.stderr.read()
+            raise Exception(f"codex 执行失败，退出码: {process.returncode}\n{stderr}")
 
         # 保存原始输出
         if output_dir:
@@ -312,7 +436,10 @@ def run_single_mode_analysis(
                 f.write(f"\n\n{'='*50}\n")
                 f.write(f"Mode: {mode}\n")
                 f.write(f"{'='*50}\n\n")
-                f.write(raw_output)
+                f.write(''.join(raw_output_lines))
+
+        # 使用最终消息或拼接的原始输出
+        raw_output = final_message if final_message else ''.join(raw_output_lines)
 
         # 提取 JSON
         json_data = extract_json_from_text(raw_output, mode)
@@ -323,31 +450,28 @@ def run_single_mode_analysis(
                 fallback = create_fallback_review("无法提取 JSON")
                 result = format_json(fallback)
             else:
-                result = raw_output
+                # 对于 analyze 和 priority 模式，也创建一个空的 fallback
+                result = format_json({})
         elif mode == "review" and not validate_review_schema(json_data):
             thread_safe_print(f"[{mode}] 警告: 输出不符合预期的 schema")
             fallback = create_fallback_review("Schema 验证失败")
             result = format_json(fallback)
         else:
-            thread_safe_print(f"[{mode}] ✓ 输出格式验证通过")
             result = format_json(json_data)
 
         # 保存结果
         result_file = output_dir / result_filename
         with open(result_file, 'w', encoding='utf-8') as f:
             f.write(result)
-        thread_safe_print(f"[{mode}] ✓ JSON 结果已保存到: {result_file}")
 
         # 生成 HTML 报告
-        html_file = generate_html_report(result_file, mode)
-        if html_file:
-            thread_safe_print(f"[{mode}] ✓ HTML 报告已生成: {html_file}")
+        generate_html_report(result_file, mode, diff_content)
 
-        thread_safe_print(f"[{mode}] ✓ 分析完成")
+        thread_safe_print(f"[{mode}] ✓ 完成")
         return (mode, result_filename, True, result)
 
     except Exception as e:
-        thread_safe_print(f"[{mode}] ✗ 分析失败: {e}")
+        thread_safe_print(f"[{mode}] ✗ 失败: {e}")
         return (mode, result_filename, False, str(e))
 
 
@@ -401,6 +525,8 @@ def main():
                        help='模型推理努力程度（默认: medium）')
     parser.add_argument('--no-update', action='store_true',
                        help='跳过仓库更新（默认会自动 fetch 并更新分支）')
+    parser.add_argument('--sequential', action='store_true',
+                       help='串行执行所有模式（默认 all 模式下并行执行）')
 
     args = parser.parse_args()
 
@@ -493,7 +619,8 @@ def main():
             # 6. 并行执行所有模式的分析
             print(f"\n{'='*50}")
             if len(modes_to_run) > 1:
-                print(f"并行运行 {len(modes_to_run)} 个模式: {', '.join(modes_to_run)} (Codex)")
+                exec_mode = "串行" if args.sequential else "并行"
+                print(f"{exec_mode}运行 {len(modes_to_run)} 个模式: {', '.join(modes_to_run)} (Codex)")
             else:
                 print(f"运行模式: {modes_to_run[0]} (Codex)")
             if with_context:
@@ -502,15 +629,19 @@ def main():
 
             results = {}
 
-            if len(modes_to_run) == 1:
-                # 单模式：串行执行
-                mode = modes_to_run[0]
-                config = mode_configs[mode]
-                mode_result = run_single_mode_analysis(
-                    mode, config['prompt'], output_dir, repo_root, config['result_filename'],
-                    model=args.model, profile=args.profile, reasoning_effort=args.reasoning_effort
-                )
-                results[mode] = mode_result
+            # 提取 diff 内容用于报告展示
+            diff_content = diff[0] if diff else None
+
+            if len(modes_to_run) == 1 or args.sequential:
+                # 串行执行（单模式或指定 --sequential）
+                for mode in modes_to_run:
+                    config = mode_configs[mode]
+                    mode_result = run_single_mode_analysis(
+                        mode, config['prompt'], output_dir, repo_root, config['result_filename'],
+                        model=args.model, profile=args.profile, reasoning_effort=args.reasoning_effort,
+                        diff_content=diff_content
+                    )
+                    results[mode] = mode_result
             else:
                 # 多模式：并行执行
                 with ThreadPoolExecutor(max_workers=3) as executor:
@@ -520,7 +651,7 @@ def main():
                         future = executor.submit(
                             run_single_mode_analysis,
                             mode, config['prompt'], output_dir, repo_root, config['result_filename'],
-                            args.model, args.profile, args.reasoning_effort
+                            args.model, args.profile, args.reasoning_effort, diff_content
                         )
                         futures[future] = mode
 
@@ -580,7 +711,7 @@ def main():
                         pass
 
                 # 生成合并报告
-                combined_html = generate_combined_report(analyze_data, priority_data, review_data)
+                combined_html = generate_combined_report(analyze_data, priority_data, review_data, diff_content)
                 combined_file = output_dir / 'report.html'
                 with open(combined_file, 'w', encoding='utf-8') as f:
                     f.write(combined_html)
